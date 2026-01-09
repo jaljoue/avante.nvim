@@ -134,6 +134,9 @@ vim.g.avante_login = vim.g.avante_login
 ---@field image_paths? string[]
 ---@field tools? AvanteLLMTool[] Available tools
 ---@field pending_compaction_history_messages? AvanteLLMMessage[] messages that might need to get compacted
+---@field tools? AvanteLLMTool[]
+---@field pending_compaction_history_messages? AvanteLLMMessage[]
+---@field session_id? string
 ---
 ---@class AvanteGeminiMessage
 ---@field role "user"

@@ -109,6 +109,12 @@ describe("claude provider", function()
     before_each(function()
       -- Reload the provider module to get a fresh state
       package.loaded["avante.providers.claude"] = nil
+      package.loaded["avante.auth.store"] = {
+        update = function() end,
+        read = function() return nil end,
+        watch = function() end,
+        path = function() return "" end,
+      }
       claude_provider = require("avante.providers.claude")
     end)
 
@@ -562,6 +568,12 @@ describe("claude provider", function()
     before_each(function()
       package.loaded["avante.providers.claude"] = nil
       package.loaded["avante.config"] = nil
+      package.loaded["avante.auth.store"] = {
+        update = function() end,
+        read = function() return nil end,
+        watch = function() end,
+        path = function() return "" end,
+      }
       Config = require("avante.config")
       claude_provider = require("avante.providers.claude")
     end)
@@ -604,16 +616,6 @@ describe("claude provider", function()
           setup = function() end,
         }
 
-        -- Mock Path to simulate no existing token file
-        local Path = require("plenary.path")
-        local original_new = Path.new
-        Path.new = function(path)
-          local mock_path = {
-            exists = function() return false end,
-          }
-          return mock_path
-        end
-
         -- Mock vim.ui.open to prevent browser
         local original_open = vim.ui.open
         vim.ui.open = function() return true end
@@ -641,7 +643,6 @@ describe("claude provider", function()
         -- Wait for any vim.schedule callbacks to complete
         wait_for_schedule()
 
-        Path.new = original_new
         vim.ui.open = original_open
         vim.notify = original_notify
 

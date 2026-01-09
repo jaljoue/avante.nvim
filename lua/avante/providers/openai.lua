@@ -6,9 +6,23 @@ local HistoryMessage = require("avante.history.message")
 local JsonParser = require("avante.libs.jsonparser")
 local Prompts = require("avante.utils.prompts")
 local LlmTools = require("avante.llm_tools")
+local Path = require("plenary.path")
+local pkce = require("avante.auth.pkce")
+local AuthStore = require("avante.auth.store")
+local OAuthServer = require("avante.auth.oauth_server")
+local curl = require("plenary.curl")
+
+---@class AvanteOpenAIProvider : AvanteDefaultBaseProvider
+---@field auth_type "api" | "chatgpt"
 
 ---@class AvanteProviderFunctor
 local M = {}
+
+---@class OpenAIAuthToken
+---@field access_token string
+---@field refresh_token string
+---@field expires_at integer
+---@field account_id string|nil
 
 M.api_key_name = "OPENAI_API_KEY"
 
@@ -17,7 +31,63 @@ M.role_map = {
   assistant = "assistant",
 }
 
+local auth_issuer = "https://auth.openai.com"
+local auth_endpoint = auth_issuer .. "/oauth/authorize"
+local token_endpoint = auth_issuer .. "/oauth/token"
+local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
+local lockfile_path = vim.fn.stdpath("data") .. "/avante/openai-timer.lock"
+local chatgpt_model_ids = {
+  "gpt-5.2-codex",
+  "gpt-5.2",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+}
+
+---@private
+---@class AvanteOpenAIState
+---@field openai_token OpenAIAuthToken?
+M.state = nil
+
+M._is_setup = false
+M._refresh_timer = nil
+M._manager_check_timer = nil
+M._file_watcher = nil
+
 function M:is_disable_stream() return false end
+
+function M:list_models()
+  local provider_conf = Providers.parse_config(self)
+  ---@cast provider_conf AvanteOpenAIProvider
+  if provider_conf.auth_type ~= "chatgpt" then return nil end
+  return vim
+    .iter(chatgpt_model_ids)
+    :map(
+      function(model_id)
+        return {
+          id = model_id,
+          name = "openai/" .. model_id,
+          display_name = "openai/" .. model_id,
+        }
+      end
+    )
+    :totable()
+end
+
+local function is_chatgpt_model_id(model) return model ~= nil and vim.tbl_contains(chatgpt_model_ids, model) end
+
+local function resolve_chatgpt_model(provider_conf)
+  if provider_conf.auth_type ~= "chatgpt" then return provider_conf.model end
+  if is_chatgpt_model_id(provider_conf.model) then return provider_conf.model end
+  local fallback = chatgpt_model_ids[1]
+  if provider_conf.model and provider_conf.model ~= "" then
+    Utils.warn(
+      "OpenAI ChatGPT auth supports only " .. table.concat(chatgpt_model_ids, ", ") .. "; using " .. fallback,
+      { once = true, title = "Avante" }
+    )
+  end
+  return fallback
+end
 
 ---@param tool AvanteLLMTool
 ---@return AvanteOpenAITool
@@ -192,9 +262,273 @@ function M.set_allowed_params(provider_conf, request_body)
   end
 end
 
+local function request_tokens(body)
+  local response = curl.post(token_endpoint, {
+    body = encode_form(body),
+    headers = {
+      ["Content-Type"] = "application/x-www-form-urlencoded",
+    },
+  })
+
+  if response.status >= 400 then return nil, string.format("HTTP %d: %s", response.status, response.body) end
+
+  local ok, tokens = pcall(vim.json.decode, response.body)
+  if not ok then return nil, "Failed to decode token response" end
+
+  return tokens
+end
+
+function M.setup()
+  local auth_type = Providers[Config.provider].auth_type
+
+  if auth_type == "chatgpt" then
+    M.api_key_name = ""
+  else
+    M.api_key_name = "OPENAI_API_KEY"
+    require("avante.tokenizers").setup(M.tokenizer_id or "gpt-4o")
+    vim.g.avante_login = true
+    M._is_setup = true
+    return
+  end
+
+  if not M.state then M.state = { openai_token = nil } end
+
+  local data = AuthStore.read()
+  local token = data and data.openai
+  if token and is_valid_token(token) then
+    M.state.openai_token = token
+    setup_token_management()
+    M._is_setup = true
+    return
+  end
+
+  if token and not is_valid_token(token) then
+    Utils.warn("OpenAI token data is corrupted or invalid, re-authenticating...", { title = "Avante" })
+    AuthStore.update("openai", nil)
+  end
+
+  M.authenticate()
+  setup_token_management()
+end
+
+function M.authenticate()
+  local verifier, verifier_err = pkce.generate_verifier()
+  if not verifier then
+    vim.schedule(
+      function()
+        vim.notify("Failed to generate PKCE verifier: " .. (verifier_err or "Unknown error"), vim.log.levels.ERROR)
+      end
+    )
+    return
+  end
+
+  local challenge, challenge_err = pkce.generate_challenge(verifier)
+  if not challenge then
+    vim.schedule(
+      function()
+        vim.notify("Failed to generate PKCE challenge: " .. (challenge_err or "Unknown error"), vim.log.levels.ERROR)
+      end
+    )
+    return
+  end
+
+  local state, state_err = pkce.generate_verifier()
+  if not state then
+    vim.schedule(
+      function() vim.notify("Failed to generate PKCE state: " .. (state_err or "Unknown error"), vim.log.levels.ERROR) end
+    )
+    return
+  end
+
+  local server_info = OAuthServer.start()
+  if not server_info then
+    vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
+    return
+  end
+
+  local redirect_uri = server_info.redirect_uri
+  local auth_url = string.format(
+    "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=%s&originator=avante",
+    auth_endpoint,
+    client_id,
+    vim.uri_encode(redirect_uri),
+    vim.uri_encode("openid profile email offline_access"),
+    challenge,
+    state
+  )
+
+  vim.schedule(function()
+    local open_success = pcall(vim.ui.open, auth_url)
+    if not open_success then
+      vim.fn.setreg("+", auth_url)
+      vim.notify("Copied URL to Clipboard, please open this URL in your browser:\n" .. auth_url, vim.log.levels.WARN)
+    end
+  end)
+
+  OAuthServer.wait_for_callback(state, function(code)
+    local tokens, err = request_tokens({
+      grant_type = "authorization_code",
+      code = code,
+      redirect_uri = redirect_uri,
+      client_id = client_id,
+      code_verifier = verifier,
+    })
+
+    if not tokens then
+      OAuthServer.stop()
+      vim.schedule(function() vim.notify("Failed to exchange code: " .. tostring(err), vim.log.levels.ERROR) end)
+      return
+    end
+
+    M.store_tokens(tokens)
+    OAuthServer.stop()
+    vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
+    M._is_setup = true
+  end, function(error_msg)
+    OAuthServer.stop()
+    vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
+  end)
+end
+
+function M.store_tokens(tokens)
+  if not M.state then M.state = { openai_token = nil } end
+
+  local account_id = extract_account_id(tokens)
+  local refresh_token = tokens.refresh_token or (M.state.openai_token and M.state.openai_token.refresh_token)
+  local json = {
+    access_token = tokens.access_token,
+    refresh_token = refresh_token,
+    expires_at = os.time() + (tokens.expires_in or 3600),
+    account_id = account_id,
+  }
+
+  M.state.openai_token = json
+
+  vim.schedule(function() AuthStore.update("openai", json) end)
+end
+
+function M.refresh_token(async, force)
+  if not M.state or not M.state.openai_token then return false end
+  async = async == nil and true or async
+  force = force or false
+
+  if
+    not force
+    and M.state.openai_token
+    and M.state.openai_token.expires_at
+    and M.state.openai_token.expires_at > math.floor(os.time())
+  then
+    return false
+  end
+
+  if not M.state.openai_token.refresh_token then return false end
+
+  local body = {
+    grant_type = "refresh_token",
+    refresh_token = M.state.openai_token.refresh_token,
+    client_id = client_id,
+  }
+
+  local function handle_response(response)
+    if response.status >= 400 then
+      vim.schedule(
+        function()
+          vim.notify(
+            string.format("[%s]Failed to refresh access token: %s", response.status, response.body),
+            vim.log.levels.ERROR
+          )
+        end
+      )
+      return false
+    end
+
+    local ok, tokens = pcall(vim.json.decode, response.body)
+    if ok then
+      M.store_tokens(tokens)
+      return true
+    end
+
+    return false
+  end
+
+  if async then
+    curl.post(
+      token_endpoint,
+      vim.tbl_deep_extend("force", {
+        callback = handle_response,
+      }, {
+        body = encode_form(body),
+        headers = {
+          ["Content-Type"] = "application/x-www-form-urlencoded",
+        },
+      })
+    )
+  else
+    local response = curl.post(token_endpoint, {
+      body = encode_form(body),
+      headers = {
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+      },
+    })
+    handle_response(response)
+  end
+end
+
+function M.setup_openai_timer()
+  if M._refresh_timer then
+    M._refresh_timer:stop()
+    M._refresh_timer:close()
+  end
+
+  local now = math.floor(os.time())
+  local expires_at = M.state.openai_token and M.state.openai_token.expires_at or now
+  local time_until_expiry = math.max(0, expires_at - now)
+  local initial_interval = math.max(0, (time_until_expiry - 120) * 1000)
+  local repeat_interval = 0
+
+  M._refresh_timer = vim.uv.new_timer()
+  M._refresh_timer:start(
+    initial_interval,
+    repeat_interval,
+    vim.schedule_wrap(function()
+      if M._is_setup then M.refresh_token(true, true) end
+    end)
+  )
+end
+
+function M.cleanup_openai()
+  if M._refresh_timer then
+    M._refresh_timer:stop()
+    M._refresh_timer:close()
+    M._refresh_timer = nil
+
+    local lockfile = Path:new(lockfile_path)
+    if lockfile:exists() then
+      local content = lockfile:read()
+      local pid = tonumber(content)
+      if pid and pid == vim.fn.getpid() then lockfile:rm() end
+    end
+  end
+
+  if M._manager_check_timer then
+    M._manager_check_timer:stop()
+    M._manager_check_timer:close()
+    M._manager_check_timer = nil
+  end
+
+  if M._file_watcher then M._file_watcher = nil end
+
+  OAuthServer.stop()
+end
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function() M.cleanup_openai() end,
+})
+
 function M:parse_messages(opts)
   local messages = {}
   local provider_conf, _ = Providers.parse_config(self)
+  provider_conf.model = resolve_chatgpt_model(provider_conf)
   local use_response_api = Providers.resolve_use_response_api(provider_conf, opts)
   local pending_reasoning_content = nil
 
@@ -843,13 +1177,35 @@ end
 ---@return AvanteCurlOutput|nil
 function M:parse_curl_args(prompt_opts)
   local provider_conf, request_body = Providers.parse_config(self)
+  ---@cast provider_conf AvanteOpenAIProvider
+  provider_conf.model = resolve_chatgpt_model(provider_conf)
   local disable_tools = provider_conf.disable_tools or false
 
   local headers = {
     ["Content-Type"] = "application/json",
   }
 
-  if Providers.env.require_api_key(provider_conf) then
+  local auth_type = provider_conf.auth_type
+
+  if auth_type == "chatgpt" then
+    if not M._is_setup then M.setup() end
+    if not M.state or not M.state.openai_token then
+      Utils.error("OpenAI ChatGPT authentication required. Please login and try again.")
+      return nil
+    end
+
+    M.refresh_token(false, false)
+    local token = M.state.openai_token
+    if not token or not token.access_token then
+      Utils.error("OpenAI ChatGPT access token unavailable. Please re-authenticate.")
+      return nil
+    end
+
+    headers["Authorization"] = "Bearer " .. token.access_token
+    headers["User-Agent"] = Utils.get_user_agent_string()
+    headers["originator"] = "avante_nvim"
+    -- headers["session_id"] = prompt_opts.session_id
+  elseif Providers.env.require_api_key(provider_conf) then
     local api_key = self.parse_api_key()
     if api_key == nil then
       Utils.error(Config.provider .. ": API key is not set, please set it in your environment variable or config file")
@@ -952,8 +1308,21 @@ function M:parse_curl_args(prompt_opts)
     } or nil
   end
 
+  -- Adjustments for codex login
+  if auth_type == "chatgpt" then
+    if request_body.max_output_tokens then request_body.max_output_tokens = nil end
+
+    request_body.store = false
+    request_body.instructions = prompt_opts.system_prompt
+  end
+
+  local url = Utils.url_join(provider_conf.endpoint, endpoint_path)
+  if auth_type == "chatgpt" and (endpoint_path == "/responses" or endpoint_path == "/chat/completions") then
+    url = codex_endpoint
+  end
+
   return {
-    url = Utils.url_join(provider_conf.endpoint, endpoint_path),
+    url = url,
     proxy = provider_conf.proxy,
     insecure = provider_conf.allow_insecure,
     headers = Utils.tbl_override(headers, self.extra_headers),
