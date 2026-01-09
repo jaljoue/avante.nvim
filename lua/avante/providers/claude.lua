@@ -6,6 +6,7 @@ local JsonParser = require("avante.libs.jsonparser")
 local Config = require("avante.config")
 local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
+local AuthStore = require("avante.auth.store")
 local curl = require("plenary.curl")
 
 ---@class AvanteAnthropicProvider : AvanteDefaultBaseProvider
@@ -19,7 +20,6 @@ local curl = require("plenary.curl")
 ---@class AvanteProviderFunctor
 local M = {}
 
-local claude_path = vim.fn.stdpath("data") .. "/avante/claude-auth.json"
 local lockfile_path = vim.fn.stdpath("data") .. "/avante/claude-timer.lock"
 local auth_endpoint = "https://claude.ai/oauth/authorize"
 local token_endpoint = "https://console.anthropic.com/v1/oauth/token"
@@ -111,20 +111,15 @@ end
 function M.setup_claude_file_watcher()
   if M._file_watcher then return end
 
-  local claude_token_file = Path:new(claude_path)
-  M._file_watcher = vim.uv.new_fs_event()
+  AuthStore.watch(function(data)
+    if data and data.claude then
+      M.state.claude_token = data.claude
+    else
+      M.state.claude_token = nil
+    end
+  end)
 
-  M._file_watcher:start(
-    claude_path,
-    {},
-    vim.schedule_wrap(function()
-      -- Reload token from file
-      if claude_token_file:exists() then
-        local ok, token = pcall(vim.json.decode, claude_token_file:read())
-        if ok then M.state.claude_token = token end
-      end
-    end)
-  )
+  M._file_watcher = true
 end
 
 -- Common token management setup (timer, file watcher, tokenizer)
@@ -146,7 +141,6 @@ local function setup_token_management()
 end
 
 function M.setup()
-  local claude_token_file = Path:new(claude_path)
   local auth_type = P[Config.provider].auth_type
 
   if auth_type == "api" then
@@ -161,35 +155,27 @@ function M.setup()
     claude_token = nil,
   } end
 
-  if claude_token_file:exists() then
-    local ok, token = pcall(vim.json.decode, claude_token_file:read())
-    -- Note: We don't check expiration here because refresh logic needs the refresh_token field
-    -- from the existing token. Expired tokens will be refreshed automatically on next use.
-    if ok and is_valid_token(token) then
-      M.state.claude_token = token
-    elseif ok and not is_valid_token(token) then
-      -- Token file exists but is malformed - delete and re-authenticate
-      Utils.warn("Claude token file is corrupted or invalid, re-authenticating...", { title = "Avante" })
-      vim.schedule(function() pcall(claude_token_file.rm, claude_token_file) end)
-      M.authenticate()
-    elseif not ok then
-      -- JSON decode failed - file is corrupted
-      Utils.warn(
-        "Failed to parse Claude token file: " .. tostring(token) .. ", re-authenticating...",
-        { title = "Avante" }
-      )
-      vim.schedule(function() pcall(claude_token_file.rm, claude_token_file) end)
-      M.authenticate()
-    end
+  local data = AuthStore.read()
+  local token = data and data.claude
 
+  -- Note: We don't check expiration here because refresh logic needs the refresh_token field
+  -- from the existing token. Expired tokens will be refreshed automatically on next use.
+  if token and is_valid_token(token) then
+    M.state.claude_token = token
     setup_token_management()
     M._is_setup = true
-  else
-    M.authenticate()
-    setup_token_management()
-    -- Note: M._is_setup is NOT set to true here because authenticate() is async
-    -- and may fail. The flag indicates setup was attempted, not that it succeeded.
+    return
   end
+
+  if token and not is_valid_token(token) then
+    Utils.warn("Claude token data is corrupted or invalid, re-authenticating...", { title = "Avante" })
+    AuthStore.update("claude", nil)
+  end
+
+  M.authenticate()
+  setup_token_management()
+  -- Note: M._is_setup is NOT set to true here because authenticate() is async
+  -- and may fail. The flag indicates setup was attempted, not that it succeeded.
 end
 
 function M.setup_claude_timer()
@@ -843,36 +829,7 @@ function M.store_tokens(tokens)
   M.state.claude_token = json
 
   vim.schedule(function()
-    local data_path = vim.fn.stdpath("data") .. "/avante/claude-auth.json"
-
-    -- Safely encode JSON
-    local ok, json_str = pcall(vim.json.encode, json)
-    if not ok then
-      Utils.error("Failed to encode token data: " .. tostring(json_str), { once = true, title = "Avante" })
-      return
-    end
-
-    -- Open file for writing
-    local file, open_err = io.open(data_path, "w")
-    if not file then
-      Utils.error("Failed to save token file: " .. tostring(open_err), { once = true, title = "Avante" })
-      return
-    end
-
-    -- Write token data
-    local write_ok, write_err = pcall(file.write, file, json_str)
-    file:close()
-
-    if not write_ok then
-      Utils.error("Failed to write token file: " .. tostring(write_err), { once = true, title = "Avante" })
-      return
-    end
-
-    -- Set file permissions (Unix only)
-    if vim.fn.has("unix") == 1 then
-      local chmod_ok = vim.loop.fs_chmod(data_path, 384) -- 0600 in decimal
-      if not chmod_ok then Utils.warn("Failed to set token file permissions", { once = true, title = "Avante" }) end
-    end
+    AuthStore.update("claude", json)
   end)
 end
 
@@ -900,11 +857,7 @@ function M.cleanup_claude()
   end
 
   -- Cleanup file watcher
-  if M._file_watcher then
-    ---@diagnostic disable-next-line: param-type-mismatch
-    M._file_watcher:stop()
-    M._file_watcher = nil
-  end
+  if M._file_watcher then M._file_watcher = nil end
 end
 
 -- Register cleanup on Neovim exit
