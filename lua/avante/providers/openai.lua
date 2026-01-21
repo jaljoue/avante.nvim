@@ -62,17 +62,17 @@ function M:list_models()
   ---@cast provider_conf AvanteOpenAIProvider
   if provider_conf.auth_type ~= "chatgpt" then return nil end
   return vim
-    .iter(chatgpt_model_ids)
-    :map(
-      function(model_id)
-        return {
-          id = model_id,
-          name = "openai/" .. model_id,
-          display_name = "openai/" .. model_id,
-        }
-      end
-    )
-    :totable()
+      .iter(chatgpt_model_ids)
+      :map(
+        function(model_id)
+          return {
+            id = model_id,
+            name = "openai/" .. model_id,
+            display_name = "openai/" .. model_id,
+          }
+        end
+      )
+      :totable()
 end
 
 local function is_chatgpt_model_id(model) return model ~= nil and vim.tbl_contains(chatgpt_model_ids, model) end
@@ -81,12 +81,12 @@ local function resolve_chatgpt_model(provider_conf)
   if provider_conf.auth_type ~= "chatgpt" then return provider_conf.model end
   if is_chatgpt_model_id(provider_conf.model) then return provider_conf.model end
   local fallback = chatgpt_model_ids[1]
-  if provider_conf.model and provider_conf.model ~= "" then
-    Utils.warn(
-      "OpenAI ChatGPT auth supports only " .. table.concat(chatgpt_model_ids, ", ") .. "; using " .. fallback,
-      { once = true, title = "Avante" }
-    )
-  end
+  -- if provider_conf.model and provider_conf.model ~= "" then
+  --   Utils.warn(
+  --     "OpenAI ChatGPT auth supports only " .. table.concat(chatgpt_model_ids, ", ") .. "; using " .. fallback,
+  --     { once = true, title = "Avante" }
+  --   )
+  -- end
   return fallback
 end
 
@@ -119,11 +119,11 @@ function M.is_mistral(url) return url:match("^https://api%.mistral%.ai/") end
 
 local function is_valid_token(token)
   return token ~= nil
-    and type(token.access_token) == "string"
-    and type(token.refresh_token) == "string"
-    and type(token.expires_at) == "number"
-    and token.access_token ~= ""
-    and token.refresh_token ~= ""
+      and type(token.access_token) == "string"
+      and type(token.refresh_token) == "string"
+      and type(token.expires_at) == "number"
+      and token.access_token ~= ""
+      and token.refresh_token ~= ""
 end
 
 local function base64url_decode(data)
@@ -270,20 +270,20 @@ function M.get_user_message(opts)
   vim.deprecate("get_user_message", "parse_messages", "0.1.0", "avante.nvim")
   return table.concat(
     vim
-      .iter(opts.messages)
-      :filter(function(_, value) return value == nil or value.role ~= "user" end)
-      :fold({}, function(acc, value)
-        acc = vim.list_extend({}, acc)
-        acc = vim.list_extend(acc, { value.content })
-        return acc
-      end),
+    .iter(opts.messages)
+    :filter(function(_, value) return value == nil or value.role ~= "user" end)
+    :fold({}, function(acc, value)
+      acc = vim.list_extend({}, acc)
+      acc = vim.list_extend(acc, { value.content })
+      return acc
+    end),
     "\n"
   )
 end
 
 function M.is_reasoning_model(model)
   return model
-    and (string.match(model, "^o%d+") ~= nil or (string.match(model, "gpt%-5") ~= nil and model ~= "gpt-5-chat"))
+      and (string.match(model, "^o%d+") ~= nil or (string.match(model, "gpt%-5") ~= nil and model ~= "gpt-5-chat"))
 end
 
 function M.set_allowed_params(provider_conf, request_body)
@@ -1227,6 +1227,9 @@ function M:parse_curl_args(prompt_opts)
     headers["Authorization"] = "Bearer " .. token.access_token
     headers["User-Agent"] = Utils.get_user_agent_string()
     headers["originator"] = "avante_nvim"
+    if token.account_id and token.account_id ~= "" then
+      headers["ChatGPT-Account-Id"] = token.account_id
+    end
     -- headers["session_id"] = prompt_opts.session_id
   elseif Providers.env.require_api_key(provider_conf) then
     local api_key = self.parse_api_key()
@@ -1243,8 +1246,12 @@ function M:parse_curl_args(prompt_opts)
     request_body.include_reasoning = true
   end
 
-  self.set_allowed_params(provider_conf, request_body)
   local use_response_api = Providers.resolve_use_response_api(provider_conf, prompt_opts)
+  if auth_type == "chatgpt" then
+    provider_conf.use_response_api = true
+    use_response_api = true
+  end
+  self.set_allowed_params(provider_conf, request_body)
 
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
 
@@ -1278,8 +1285,37 @@ function M:parse_curl_args(prompt_opts)
 
   -- Determine endpoint path based on use_response_api
   local endpoint_path = use_response_api and "/responses" or "/chat/completions"
+  if auth_type == "chatgpt" then
+    endpoint_path = "/responses"
+  end
 
+  local original_use_response_api = self.use_response_api
+  if auth_type == "chatgpt" then
+    self.use_response_api = true
+  end
   local parsed_messages = self:parse_messages(prompt_opts)
+  if auth_type == "chatgpt" then
+    self.use_response_api = original_use_response_api
+  end
+
+  local codex_instructions = nil
+  if auth_type == "chatgpt" then
+    local filtered_messages = {}
+    for _, message in ipairs(parsed_messages) do
+      if message.role == "system" or message.role == "developer" then
+        if type(message.content) == "string" and message.content ~= "" then
+          if codex_instructions == nil then
+            codex_instructions = message.content
+          else
+            codex_instructions = codex_instructions .. "\n\n" .. message.content
+          end
+        end
+      else
+        table.insert(filtered_messages, message)
+      end
+    end
+    parsed_messages = filtered_messages
+  end
 
   -- Build base body
   local base_body = {
@@ -1336,10 +1372,15 @@ function M:parse_curl_args(prompt_opts)
 
   -- Adjustments for codex login
   if auth_type == "chatgpt" then
-    if request_body.max_output_tokens then request_body.max_output_tokens = nil end
-
     request_body.store = false
-    request_body.instructions = prompt_opts.system_prompt
+    request_body.messages = nil
+    request_body.input = nil
+    local instructions = codex_instructions or prompt_opts.system_prompt
+    if instructions and instructions ~= "" then
+      request_body.instructions = instructions
+    else
+      request_body.instructions = nil
+    end
   end
 
   local url = Utils.url_join(provider_conf.endpoint, endpoint_path)
