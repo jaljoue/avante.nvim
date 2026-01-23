@@ -287,7 +287,7 @@ function M.is_reasoning_model(model)
 end
 
 function M.set_allowed_params(provider_conf, request_body)
-  local use_response_api = Providers.resolve_use_response_api(provider_conf, nil)
+  local use_response_api = provider_conf.auth_type == "chatgpt" and true or Providers.resolve_use_response_api(provider_conf, nil)
   if M.is_reasoning_model(provider_conf.model) then
     -- Reasoning models have specific parameter requirements
     request_body.temperature = 1
@@ -1375,6 +1375,7 @@ function M:parse_curl_args(prompt_opts)
     request_body.store = false
     request_body.messages = nil
     request_body.input = nil
+    request_body.max_output_tokens = nil
     local instructions = codex_instructions or prompt_opts.system_prompt
     if instructions and instructions ~= "" then
       request_body.instructions = instructions
