@@ -595,6 +595,11 @@ function M:parse_messages(opts)
   local provider_conf, _ = Providers.parse_config(self)
   provider_conf.model = resolve_chatgpt_model(provider_conf)
   local use_response_api = Providers.resolve_use_response_api(provider_conf, opts)
+  if provider_conf.auth_type == "chatgpt" then use_response_api = true end
+  local allow_reasoning_input = opts
+    and opts.session_ctx
+    and opts.session_ctx.allow_reasoning_input == true
+  local force_include_tool_calls = opts and opts.force_include_tool_calls == true
 
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
   local system_prompt = opts.system_prompt
@@ -615,13 +620,15 @@ function M:parse_messages(opts)
     elseif type(msg.content) == "table" then
       -- Check if this is a reasoning message (object with type "reasoning")
       if msg.content.type == "reasoning" then
-        -- Add reasoning message directly (for Response API)
-        table.insert(messages, {
-          type = "reasoning",
-          id = msg.content.id,
-          encrypted_content = msg.content.encrypted_content,
-          summary = msg.content.summary,
-        })
+        -- Avoid re-sending response-item IDs unless explicitly allowed.
+        if allow_reasoning_input then
+          table.insert(messages, {
+            type = "reasoning",
+            id = msg.content.id,
+            encrypted_content = msg.content.encrypted_content,
+            summary = msg.content.summary,
+          })
+        end
         return
       end
 
@@ -641,13 +648,14 @@ function M:parse_messages(opts)
             },
           })
         elseif item.type == "reasoning" then
-          -- Add reasoning message directly (for Response API)
-          table.insert(messages, {
-            type = "reasoning",
-            id = item.id,
-            encrypted_content = item.encrypted_content,
-            summary = item.summary,
-          })
+          if allow_reasoning_input then
+            table.insert(messages, {
+              type = "reasoning",
+              id = item.id,
+              encrypted_content = item.encrypted_content,
+              summary = item.summary,
+            })
+          end
         elseif item.type == "tool_use" and not use_ReAct_prompt then
           has_tool_use = true
           table.insert(tool_calls, {
@@ -691,7 +699,9 @@ function M:parse_messages(opts)
         if #tool_calls > 0 then
           -- Only skip tool_calls if using Response API with previous_response_id support
           -- Copilot uses Response API format but doesn't support previous_response_id
-          local should_include_tool_calls = not use_response_api or not provider_conf.support_previous_response_id
+          local should_include_tool_calls = not use_response_api
+            or force_include_tool_calls
+            or not provider_conf.support_previous_response_id
 
           if should_include_tool_calls then
             -- For Response API without previous_response_id support (like Copilot),
@@ -1047,7 +1057,12 @@ function M:parse_response(ctx, data_stream, _, opts)
       -- Response completed - save response.id for future requests
       if jsn.response and jsn.response.id then
         ctx.last_response_id = jsn.response.id
-        -- Store in provider for next request
+        if opts.session_ctx then
+          opts.session_ctx.last_response_id = jsn.response.id
+          opts.session_ctx.last_response_model = opts.session_ctx.last_request_model
+          opts.session_ctx.last_response_auth_type = opts.session_ctx.last_request_auth_type
+        end
+        -- Store in provider for backward compatibility
         self.last_response_id = jsn.response.id
       end
       if
@@ -1254,6 +1269,21 @@ function M:parse_curl_args(prompt_opts)
   self.set_allowed_params(provider_conf, request_body)
 
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
+  local session_ctx = prompt_opts.session_ctx
+  local supports_previous_response_id = provider_conf.support_previous_response_id == true
+  if auth_type == "chatgpt" then supports_previous_response_id = false end
+
+  if session_ctx and session_ctx.last_response_model then
+    if session_ctx.last_response_model ~= provider_conf.model or session_ctx.last_response_auth_type ~= auth_type then
+      session_ctx.last_response_id = nil
+      session_ctx.last_response_model = nil
+      session_ctx.last_response_auth_type = nil
+    end
+  end
+  if session_ctx then
+    session_ctx.last_request_model = provider_conf.model
+    session_ctx.last_request_auth_type = auth_type
+  end
 
   local tools = nil
   if not disable_tools and prompt_opts.tools and not use_ReAct_prompt then
@@ -1293,6 +1323,31 @@ function M:parse_curl_args(prompt_opts)
   if auth_type == "chatgpt" then
     self.use_response_api = true
   end
+  local has_function_outputs = false
+  if use_response_api and prompt_opts.messages then
+    for _, msg in ipairs(prompt_opts.messages) do
+      if type(msg.content) == "table" then
+        for _, item in ipairs(msg.content) do
+          if item.type == "tool_result" then
+            has_function_outputs = true
+            break
+          end
+        end
+      end
+      if has_function_outputs then break end
+    end
+  end
+
+  local should_use_previous_response_id = use_response_api
+    and supports_previous_response_id
+    and has_function_outputs
+    and session_ctx
+    and session_ctx.last_response_id
+    and session_ctx.last_response_model == provider_conf.model
+    and session_ctx.last_response_auth_type == auth_type
+  if use_response_api and has_function_outputs and not should_use_previous_response_id then
+    prompt_opts.force_include_tool_calls = true
+  end
   local parsed_messages = self:parse_messages(prompt_opts)
   if auth_type == "chatgpt" then
     self.use_response_api = original_use_response_api
@@ -1327,26 +1382,16 @@ function M:parse_curl_args(prompt_opts)
 
   -- Response API uses 'input' instead of 'messages'
   if use_response_api then
-    -- Check if we have tool results - if so, use previous_response_id
-    local has_function_outputs = false
-    for _, msg in ipairs(parsed_messages) do
-      if msg.type == "function_call_output" then
-        has_function_outputs = true
-        break
-      end
-    end
-
-    if has_function_outputs and self.last_response_id then
+    if should_use_previous_response_id then
       -- When sending function outputs, use previous_response_id
-      base_body.previous_response_id = self.last_response_id
+      base_body.previous_response_id = session_ctx.last_response_id
       -- Only send the function outputs, not the full history
       local function_outputs = {}
       for _, msg in ipairs(parsed_messages) do
         if msg.type == "function_call_output" then table.insert(function_outputs, msg) end
       end
       base_body.input = function_outputs
-      -- Clear the stored response_id after using it
-      self.last_response_id = nil
+      if session_ctx then session_ctx.last_response_id = nil end
     else
       -- Normal request without tool results
       base_body.input = parsed_messages
