@@ -31,6 +31,7 @@ local Config = require("avante.config")
 local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
 local AuthStore = require("avante.auth.store")
+local OAuthUI = require("avante.ui.oauth")
 local curl = require("plenary.curl")
 
 ---@class AvanteAnthropicProvider : AvanteDefaultBaseProvider
@@ -778,13 +779,7 @@ function M.authenticate()
     challenge
   )
 
-  -- Open browser to begin authentication
-  -- Always show URL for terminal environments without browsers
-  vim.schedule(function()
-    vim.fn.setreg("+", auth_url)
-    vim.notify("Please open this URL in your browser:\n" .. auth_url, vim.log.levels.WARN)
-    pcall(vim.ui.open, auth_url)
-  end)
+  vim.schedule(function() OAuthUI.show_auth_url({ provider_name = "Claude Pro/Max", auth_url = auth_url }) end)
 
   local function on_submit(input)
     if input then
