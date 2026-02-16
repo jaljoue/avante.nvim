@@ -1,5 +1,88 @@
 local M = {}
 
+---Return OS name when possible (e.g. "Darwin", "Linux").
+---@return string|nil
+local function get_os_name()
+  local ok, uv = pcall(function()
+    return vim and vim.loop
+  end)
+  if ok and uv and uv.os_uname then
+    local uname = uv.os_uname()
+    if uname and uname.sysname then return uname.sysname end
+  end
+
+  if type(jit) == "table" and jit.os then return jit.os end
+
+  return nil
+end
+
+local function is_macos()
+  local os_name = get_os_name()
+  return os_name == "Darwin" or os_name == "OSX"
+end
+
+local function load_commoncrypto(ffi)
+  local candidates = { "CommonCrypto", "/usr/lib/system/libcommonCrypto.dylib" }
+  for _, path in ipairs(candidates) do
+    local ok2, lib2 = pcall(ffi.load, path)
+    if ok2 then return lib2, nil end
+  end
+
+  return nil, "Failed to load CommonCrypto"
+end
+
+local function commoncrypto_random_bytes(ffi, n)
+  local lib, lib_err = load_commoncrypto(ffi)
+  if not lib then return nil, lib_err end
+
+  local cdef_ok = pcall(
+    ffi.cdef,
+    [[
+      typedef int32_t CCRNGStatus;
+      CCRNGStatus CCRandomGenerateBytes(void *bytes, size_t count);
+    ]]
+  )
+  if not cdef_ok then
+    return nil, "Failed to define CommonCrypto CCRandomGenerateBytes"
+  end
+
+  local buf = ffi.new("unsigned char[?]", n)
+  if lib.CCRandomGenerateBytes(buf, n) == 0 then
+    return ffi.string(buf, n), nil
+  end
+
+  return nil, "CommonCrypto CCRandomGenerateBytes failed"
+end
+
+local function commoncrypto_sha256(ffi, data)
+  local lib, lib_err = load_commoncrypto(ffi)
+  if not lib then return nil, lib_err end
+
+  local cdef_ok = pcall(
+    ffi.cdef,
+    [[
+      unsigned char *CC_SHA256(const void *data, size_t len, unsigned char *md);
+    ]]
+  )
+  if not cdef_ok then
+    return nil, "Failed to define CommonCrypto CC_SHA256"
+  end
+
+  local digest = ffi.new("unsigned char[32]")
+  lib.CC_SHA256(data, #data, digest)
+  return ffi.string(digest, 32), nil
+end
+
+---Load OpenSSL's crypto library.
+---@param ffi any
+---@return any|nil lib
+---@return string|nil error
+local function load_openssl_crypto(ffi)
+  local lib_ok, lib = pcall(ffi.load, "crypto")
+  if lib_ok then return lib, nil end
+  return nil, "Failed to load OpenSSL crypto library - please install OpenSSL"
+end
+
 ---Generates a random N number of bytes using crypto lib over ffi, falling back to urandom
 ---@param n integer number of bytes to generate
 ---@return string|nil bytes string of bytes generated, or nil if all methods fail
@@ -7,9 +90,15 @@ local M = {}
 local function get_random_bytes(n)
   local ok, ffi = pcall(require, "ffi")
   if ok then
-    -- Try OpenSSL first (cross-platform)
-    local lib_ok, lib = pcall(ffi.load, "crypto")
-    if lib_ok then
+    local commoncrypto_err
+    if is_macos() then
+      local bytes, cc_err = commoncrypto_random_bytes(ffi, n)
+      if bytes then return bytes, nil end
+      commoncrypto_err = cc_err
+    end
+
+    local lib, lib_err = load_openssl_crypto(ffi)
+    if lib then
       local cdef_ok = pcall(
         ffi.cdef,
         [[
@@ -22,7 +111,8 @@ local function get_random_bytes(n)
       end
       return nil, "OpenSSL RAND_bytes failed - OpenSSL may not be properly installed"
     end
-    return nil, "Failed to load OpenSSL crypto library - please install OpenSSL"
+
+    return nil, lib_err or commoncrypto_err or "Failed to load OpenSSL crypto library - please install OpenSSL"
   end
 
   -- Fallback
@@ -61,8 +151,15 @@ end
 function M.generate_challenge(verifier)
   local ok, ffi = pcall(require, "ffi")
   if ok then
-    local lib_ok, lib = pcall(ffi.load, "crypto")
-    if lib_ok then
+    local commoncrypto_err
+    if is_macos() then
+      local digest, cc_err = commoncrypto_sha256(ffi, verifier)
+      if digest then return base64url_encode(digest), nil end
+      commoncrypto_err = cc_err
+    end
+
+    local lib, lib_err = load_openssl_crypto(ffi)
+    if lib then
       local cdef_ok = pcall(
         ffi.cdef,
         [[
@@ -77,7 +174,8 @@ function M.generate_challenge(verifier)
       end
       return nil, "Failed to define SHA256 function - OpenSSL may not be properly configured"
     end
-    return nil, "Failed to load OpenSSL crypto library - please install OpenSSL"
+
+    return nil, lib_err or commoncrypto_err or "Failed to load OpenSSL crypto library - please install OpenSSL"
   end
 
   return nil, "FFI not available - LuaJIT is required for PKCE authentication"
