@@ -3,13 +3,8 @@ local M = {}
 ---Return OS name when possible (e.g. "Darwin", "Linux").
 ---@return string|nil
 local function get_os_name()
-  local ok, uv = pcall(function()
-    return vim and vim.loop
-  end)
-  if ok and uv and uv.os_uname then
-    local uname = uv.os_uname()
-    if uname and uname.sysname then return uname.sysname end
-  end
+  local uname = vim.uv.os_uname()
+  if uname and uname.sysname then return uname.sysname end
 
   if type(jit) == "table" and jit.os then return jit.os end
 
