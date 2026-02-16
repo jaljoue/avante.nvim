@@ -4,6 +4,12 @@ local Utils = require("avante.utils")
 local Completion = require("avante.input.completion")
 local FileRefs = require("avante.input.file_refs")
 
+local function render_markdown(bufnr)
+  local ok, render_markdown_api = pcall(require, "render-markdown")
+  if not ok then return end
+  pcall(render_markdown_api.render, { buf = bufnr, event = "AvanteMarkdownInput" })
+end
+
 ---@class avante.ui.MarkdownInput
 ---@field bufnr integer | nil
 ---@field winid integer | nil
@@ -76,6 +82,8 @@ function MarkdownInput:setup_markdown()
 
   -- Set buffer options for better markdown editing
   vim.bo[self.bufnr].filetype = "AvantePromptInput"
+
+  render_markdown(self.bufnr)
 end
 
 function MarkdownInput:open()
@@ -291,6 +299,7 @@ function MarkdownInput:setup_autocmds()
     callback = function()
       self:show_shortcuts_hints()
       FileRefs.highlight_file_references(bufnr)
+      render_markdown(bufnr)
     end,
   })
 
