@@ -1,6 +1,8 @@
 local api = vim.api
 local Config = require("avante.config")
 local Utils = require("avante.utils")
+local Completion = require("avante.input.completion")
+local FileRefs = require("avante.input.file_refs")
 
 ---@class avante.ui.MarkdownInput
 ---@field bufnr integer | nil
@@ -84,8 +86,9 @@ function MarkdownInput:open()
   vim.bo[bufnr].filetype = "AvantePromptInput"
   Utils.mark_as_sidebar_buffer(bufnr)
 
-  -- Setup markdown before opening window
   self:setup_markdown()
+  Completion.setup_buffer_completion(bufnr)
+  vim.bo[bufnr].syntax = "avante_input"
 
   local win_opts = vim.tbl_extend("force", {
     relative = "cursor",
@@ -285,7 +288,10 @@ function MarkdownInput:setup_autocmds()
   api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group,
     buffer = bufnr,
-    callback = function() self:show_shortcuts_hints() end,
+    callback = function()
+      self:show_shortcuts_hints()
+      FileRefs.highlight_file_references(bufnr)
+    end,
   })
 
   api.nvim_create_autocmd("ModeChanged", {

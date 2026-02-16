@@ -793,7 +793,7 @@ M._defaults = {
   input = {
     provider = "native",
     provider_opts = {},
-    enable_markdown = false, -- Phase 1: Enable markdown rendering in input buffers (requires render-markdown.nvim)
+    enable_markdown = false, -- Enable markdown rendering in input buffers (requires render-markdown.nvim)
   },
   suggestion = {
     debounce = 600,
@@ -912,6 +912,8 @@ local function apply_model_selection(config, model_name, provider_name)
 end
 
 ---@param opts table<string, any>|nil -- Optional table parameter for configuration settings
+M._options = vim.deepcopy(M._defaults)
+
 function M.setup(opts)
   opts = opts or {} -- Ensure `opts` is defined with a default table
   if vim.fn.has("nvim-0.11") == 1 then

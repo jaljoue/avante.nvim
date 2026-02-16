@@ -1,11 +1,10 @@
 local api = vim.api
-local Split = require("nui.split")
 local Config = require("avante.config")
-local Utils = require("avante.utils")
+local FileRefs = require("avante.input.file_refs")
+local Completion = require("avante.input.completion")
 
 ---@class avante.input.SidebarInput
 ---Markdown-aware sidebar input container
----This is the Phase 1 foundation for the new markdown-based input system
 local M = {}
 
 ---Setup markdown treesitter and render-markdown integration for a buffer
@@ -55,12 +54,12 @@ function M.configure_input_buffer(sidebar)
   local bufnr = sidebar.containers.input.bufnr
   if not bufnr or not api.nvim_buf_is_valid(bufnr) then return end
 
-  -- Set filetype
   api.nvim_set_option_value("filetype", "AvanteInput", { buf = bufnr })
 
-  -- Setup markdown if enabled
   if Config.input.enable_markdown then
     M.setup_markdown(bufnr)
+    Completion.setup_buffer_completion(bufnr)
+    vim.bo[bufnr].syntax = "avante_input"
   end
 end
 
@@ -84,6 +83,9 @@ function M.setup_autocmds(sidebar, augroup)
     buffer = bufnr,
     callback = function()
       place_sign_at_first_line()
+      if Config.input.enable_markdown then
+        FileRefs.highlight_file_references(bufnr)
+      end
     end,
   })
 

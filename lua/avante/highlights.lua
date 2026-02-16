@@ -66,6 +66,8 @@ local Highlights = {
   AVANTE_LOGO_LINE_12 = { name = "AvanteLogoLine12", fg = "#676767" },
   AVANTE_LOGO_LINE_13 = { name = "AvanteLogoLine13", fg = "#5a5a5a" },
   AVANTE_LOGO_LINE_14 = { name = "AvanteLogoLine14", fg = "#4d4d4d" },
+  AVANTE_FILE_REF = { name = "AvanteFileRef", fg = "#98c379" },
+  AVANTE_DIRECTORY_REF = { name = "AvanteDirectoryRef", fg = "#56b6c2" },
 }
 
 Highlights.conflict = {

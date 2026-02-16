@@ -1,7 +1,8 @@
 local api = vim.api
 local fn = vim.fn
-local Config = require("avante.config")
 local Utils = require("avante.utils")
+
+local function get_config() return require("avante.config") end
 
 ---@class avante.ui.PromptInput
 ---@field bufnr integer | nil
@@ -33,6 +34,7 @@ PromptInput.__index = PromptInput
 ---@param opts? avante.ui.PromptInputOptions
 function PromptInput:new(opts)
   opts = opts or {}
+  local config = get_config()
   local obj = setmetatable({}, PromptInput)
   obj.bufnr = nil
   obj.winid = nil
@@ -44,7 +46,7 @@ function PromptInput:new(opts)
   obj.close_on_submit = opts.close_on_submit or false
   obj.win_opts = opts.win_opts
   obj.default_value = opts.default_value
-  obj.spinner_chars = Config.windows.spinner.editing
+  obj.spinner_chars = (((config.windows or {}).spinner or {}).editing) or { "-" }
   obj.spinner_index = 1
   obj.spinner_timer = nil
   obj.spinner_active = false
@@ -54,6 +56,7 @@ end
 
 function PromptInput:open()
   self:close()
+  local config = get_config()
 
   local bufnr = api.nvim_create_buf(false, true)
   self.bufnr = bufnr
@@ -67,7 +70,7 @@ function PromptInput:open()
     row = 1,
     col = 0,
     style = "minimal",
-    border = Config.windows.edit.border,
+    border = (((config.windows or {}).edit or {}).border) or "rounded",
     title = { { "Input", "FloatTitle" } },
     title_pos = "center",
   }, self.win_opts)
@@ -131,6 +134,7 @@ end
 
 function PromptInput:show_shortcuts_hints()
   self:close_shortcuts_hints()
+  local config = get_config()
 
   if not self.winid or not api.nvim_win_is_valid(self.winid) then return end
 
@@ -138,7 +142,9 @@ function PromptInput:show_shortcuts_hints()
   local win_height = api.nvim_win_get_height(self.winid)
   local buf_height = api.nvim_buf_line_count(self.bufnr)
 
-  local hint_text = (vim.fn.mode() ~= "i" and Config.mappings.submit.normal or Config.mappings.submit.insert)
+  local normal_submit = ((((config.mappings or {}).submit or {}).normal) or "<CR>")
+  local insert_submit = ((((config.mappings or {}).submit or {}).insert) or "<CR>")
+  local hint_text = (vim.fn.mode() ~= "i" and normal_submit or insert_submit)
     .. ": submit"
 
   local display_text = hint_text
@@ -222,6 +228,14 @@ end
 
 function PromptInput:setup_keymaps()
   local bufnr = self.bufnr
+  local config = get_config()
+  local mappings = config.mappings or {}
+  local submit = mappings.submit or {}
+  local cancel = mappings.cancel or {}
+  local submit_insert = submit.insert or "<CR>"
+  local submit_normal = submit.normal or "<CR>"
+  local cancel_normal = cancel.normal or { "<Esc>" }
+  local cancel_insert = cancel.insert or { "<C-c>" }
 
   local function get_input()
     if not bufnr or not api.nvim_buf_is_valid(bufnr) then return "" end
@@ -231,22 +245,22 @@ function PromptInput:setup_keymaps()
 
   vim.keymap.set(
     "i",
-    Config.mappings.submit.insert,
+    submit_insert,
     function() self:submit(get_input()) end,
     { buffer = bufnr, noremap = true, silent = true }
   )
 
   vim.keymap.set(
     "n",
-    Config.mappings.submit.normal,
+    submit_normal,
     function() self:submit(get_input()) end,
     { buffer = bufnr, noremap = true, silent = true }
   )
 
-  for _, key in ipairs(Config.mappings.cancel.normal) do
+  for _, key in ipairs(cancel_normal) do
     vim.keymap.set("n", key, function() self:cancel() end, { buffer = bufnr })
   end
-  for _, key in ipairs(Config.mappings.cancel.insert) do
+  for _, key in ipairs(cancel_insert) do
     vim.keymap.set("i", key, function() self:cancel() end, { buffer = bufnr })
   end
 end
