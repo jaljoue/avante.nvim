@@ -8,7 +8,6 @@ local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
 local AuthStore = require("avante.auth.store")
 local OAuthUI = require("avante.ui.oauth")
-local OAuthServer = require("avante.auth.oauth_server")
 local curl = require("plenary.curl")
 
 ---@class AvanteAnthropicProvider : AvanteDefaultBaseProvider
@@ -785,27 +784,12 @@ function M.authenticate()
       provider_name = "Claude Pro/Max",
       auth_url = build_auth_url("https://console.anthropic.com/oauth/code/callback"),
       on_open = function(ctx)
-        local server_info = OAuthServer.start()
-        if not server_info then
-          vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
-          return
-        end
-
-        OAuthServer.wait_for_callback(state, function(code)
-          exchange_code(code, state, server_info.redirect_uri)
-          OAuthServer.stop()
-        end, function(error_msg)
-          OAuthServer.stop()
-          vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
-        end)
-
-        local browser_url = build_auth_url(server_info.redirect_uri)
-        local ok, err = pcall(vim.ui.open, browser_url)
+        local ok, err = pcall(vim.ui.open, ctx.auth_url)
         if ok then
           vim.notify("Opened Claude login URL in browser", vim.log.levels.INFO)
           ctx.close()
+          prompt_manual_input()
         else
-          OAuthServer.stop()
           vim.fn.setreg("+", browser_url)
           vim.notify(
             "Could not open browser (" .. tostring(err) .. "). URL copied to clipboard for manual flow.",
