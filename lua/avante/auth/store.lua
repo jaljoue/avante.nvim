@@ -51,11 +51,6 @@ local function release_lock()
   end
 end
 
-local function ensure_parent_dir()
-  local parent = Path:new(auth_path):parent()
-  if not parent:exists() then parent:mkdir({ parents = true }) end
-end
-
 local function safe_decode(json_str)
   local ok, data = pcall(vim.json.decode, json_str)
   if ok and type(data) == "table" then return data end
@@ -63,7 +58,8 @@ local function safe_decode(json_str)
 end
 
 local function write_json(data)
-  ensure_parent_dir()
+  local parent = Path:new(auth_path):parent()
+  if not parent:exists() then parent:mkdir({ parents = true }) end
 
   local ok, json_str = pcall(vim.json.encode, data)
   if not ok then
@@ -93,7 +89,7 @@ local function write_json(data)
   end
 
   if vim.fn.has("unix") == 1 then
-    local chmod_ok = vim.loop.fs_chmod(auth_path, 384)
+    local chmod_ok = vim.uv.fs_chmod(auth_path, 384) -- 384 is "600" in octal, RW for user only
     if not chmod_ok then Utils.warn("Failed to set auth file permissions", { once = true, title = "Avante" }) end
   end
 
