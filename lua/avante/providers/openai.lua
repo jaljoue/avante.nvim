@@ -603,6 +603,7 @@ function M:parse_messages(opts)
   if provider_conf.auth_type == "chatgpt" then use_response_api = true end
   local allow_reasoning_input = opts and opts.session_ctx and opts.session_ctx.allow_reasoning_input == true
   local force_include_tool_calls = opts and opts.force_include_tool_calls == true
+  local pending_reasoning_content = nil
 
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
   local system_prompt = opts.system_prompt
@@ -658,6 +659,15 @@ function M:parse_messages(opts)
               encrypted_content = item.encrypted_content,
               summary = item.summary,
             })
+          end
+        elseif item.type == "thinking" then
+          local thinking_content = item.thinking or ""
+          if thinking_content ~= "" then
+            if pending_reasoning_content == nil then
+              pending_reasoning_content = thinking_content
+            else
+              pending_reasoning_content = pending_reasoning_content .. thinking_content
+            end
           end
         elseif item.type == "tool_use" and not use_ReAct_prompt then
           has_tool_use = true
@@ -724,9 +734,23 @@ function M:parse_messages(opts)
               if last_message and last_message.role == self.role_map["assistant"] and last_message.tool_calls then
                 last_message.tool_calls = vim.list_extend(last_message.tool_calls, tool_calls)
 
+                if pending_reasoning_content then
+                  last_message.reasoning_content = pending_reasoning_content
+                  pending_reasoning_content = nil
+                end
+
                 if not last_message.content then last_message.content = "" end
               else
-                table.insert(messages, { role = self.role_map["assistant"], tool_calls = tool_calls, content = "" })
+                local tool_call_message = {
+                  role = self.role_map["assistant"],
+                  tool_calls = tool_calls,
+                  content = "",
+                }
+                if pending_reasoning_content then
+                  tool_call_message.reasoning_content = pending_reasoning_content
+                  pending_reasoning_content = nil
+                end
+                table.insert(messages, tool_call_message)
               end
             end
           end
@@ -922,18 +946,18 @@ function M:add_text_message(ctx, text, state, opts)
 end
 
 function M:add_thinking_message(ctx, text, state, opts)
-  if ctx.reasonging_content == nil then ctx.reasonging_content = "" end
-  ctx.reasonging_content = ctx.reasonging_content .. text
+  if ctx.reasoning_content == nil then ctx.reasoning_content = "" end
+  ctx.reasoning_content = ctx.reasoning_content .. text
   local msg = HistoryMessage:new("assistant", {
     type = "thinking",
-    thinking = ctx.reasonging_content,
+    thinking = ctx.reasoning_content,
     signature = "",
   }, {
     state = state,
-    uuid = ctx.reasonging_content_uuid,
+    uuid = ctx.reasoning_content_uuid,
     turn_id = ctx.turn_id,
   })
-  ctx.reasonging_content_uuid = msg.uuid
+  ctx.reasoning_content_uuid = msg.uuid
   if opts.on_messages_add then opts.on_messages_add({ msg }) end
 end
 
