@@ -8,6 +8,7 @@ local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
 local AuthStore = require("avante.auth.store")
 local OAuthUI = require("avante.ui.oauth")
+local OAuthServer = require("avante.auth.oauth_server")
 local curl = require("plenary.curl")
 
 ---@class AvanteAnthropicProvider : AvanteDefaultBaseProvider
@@ -142,15 +143,19 @@ local function setup_token_management()
 end
 
 function M.setup()
-  local auth_type = P[Config.provider].auth_type
+  local provider = P[Config.provider]
+  local auth_type = provider.auth_type
 
   if auth_type == "api" then
+    M.api_key_name = "ANTHROPIC_API_KEY"
+    provider.api_key_name = "ANTHROPIC_API_KEY"
     require("avante.tokenizers").setup(M.tokenizer_id)
     M._is_setup = true
     return
   end
 
   M.api_key_name = ""
+  provider.api_key_name = ""
 
   if not M.state then M.state = {
     claude_token = nil,
@@ -686,65 +691,136 @@ function M.authenticate()
     return
   end
 
-  local auth_url = string.format(
-    "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&state=%s&code_challenge=%s&code_challenge_method=S256",
-    auth_endpoint,
-    client_id,
-    vim.uri_encode("https://console.anthropic.com/oauth/code/callback"),
-    vim.uri_encode("org:create_api_key user:profile user:inference"),
-    state,
-    challenge
-  )
+  local function build_auth_url(redirect_uri)
+    return string.format(
+      "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&state=%s&code_challenge=%s&code_challenge_method=S256",
+      auth_endpoint,
+      client_id,
+      vim.uri_encode(redirect_uri),
+      vim.uri_encode("org:create_api_key user:profile user:inference"),
+      state,
+      challenge
+    )
+  end
 
-  vim.schedule(function() OAuthUI.show_auth_url({ provider_name = "Claude Pro/Max", auth_url = auth_url }) end)
+  local function exchange_code(code, callback_state, redirect_uri)
+    local response = curl.post(token_endpoint, {
+      body = vim.json.encode({
+        grant_type = "authorization_code",
+        client_id = client_id,
+        code = code,
+        state = callback_state,
+        redirect_uri = redirect_uri,
+        code_verifier = verifier,
+      }),
+      headers = {
+        ["Content-Type"] = "application/json",
+      },
+    })
 
-  local function on_submit(input)
-    if input then
-      local splits = vim.split(input, "#")
-      local response = curl.post(token_endpoint, {
-        body = vim.json.encode({
-          grant_type = "authorization_code",
-          client_id = client_id,
-          code = splits[1],
-          state = splits[2],
-          redirect_uri = "https://console.anthropic.com/oauth/code/callback",
-          code_verifier = verifier,
-        }),
-        headers = {
-          ["Content-Type"] = "application/json",
-        },
-      })
+    if response.status >= 400 then
+      vim.schedule(function() vim.notify(string.format("HTTP %d: %s", response.status, response.body), vim.log.levels.ERROR) end)
+      return
+    end
 
-      if response.status >= 400 then
-        vim.schedule(
-          function() vim.notify(string.format("HTTP %d: %s", response.status, response.body), vim.log.levels.ERROR) end
-        )
-        return
-      end
-
-      local ok, tokens = pcall(vim.json.decode, response.body)
-      if ok then
-        M.store_tokens(tokens)
-        vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
-        M._is_setup = true
-      else
-        vim.schedule(function() vim.notify("Failed to decode JSON", vim.log.levels.ERROR) end)
-      end
+    local ok, tokens = pcall(vim.json.decode, response.body)
+    if ok then
+      M.store_tokens(tokens)
+      vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
+      M._is_setup = true
     else
-      vim.schedule(function() vim.notify("Failed to parse code, authentication failed!", vim.log.levels.ERROR) end)
+      vim.schedule(function() vim.notify("Failed to decode JSON", vim.log.levels.ERROR) end)
     end
   end
 
-  local Input = require("avante.ui.input")
-  local input = Input:new({
-    provider = Config.input.provider,
-    title = "Enter Auth Key: ",
-    default = "",
-    conceal = false, -- Key input should be concealed
-    provider_opts = Config.input.provider_opts,
-    on_submit = on_submit,
-  })
-  input:open()
+  local function parse_manual_input(input)
+    if not input then return nil, nil, "Authorization input is empty" end
+    local value = vim.trim(input)
+    if value == "" then return nil, nil, "Authorization input is empty" end
+
+    local code, input_state
+    if value:match("^https?://") then
+      code = value:match("[?&]code=([^&]+)")
+      input_state = value:match("[?&]state=([^&]+)")
+      if code then code = vim.uri_decode(code) end
+      if input_state then input_state = vim.uri_decode(input_state) end
+    elseif value:find("#", 1, true) then
+      local splits = vim.split(value, "#")
+      code = splits[1]
+      input_state = splits[2]
+    else
+      code = value
+    end
+
+    if not code or code == "" then return nil, nil, "Failed to parse authorization code" end
+    if input_state and input_state ~= "" and input_state ~= state then
+      return nil, nil, "State mismatch - potential CSRF attack"
+    end
+
+    return code, input_state or state, nil
+  end
+
+  local function prompt_manual_input()
+    local Input = require("avante.ui.input")
+    local input = Input:new({
+      provider = Config.input.provider,
+      title = "Enter Auth Key: ",
+      default = "",
+      conceal = false,
+      provider_opts = Config.input.provider_opts,
+      on_submit = function(raw)
+        local code, callback_state, parse_err = parse_manual_input(raw)
+        if not code then
+          vim.schedule(function() vim.notify(parse_err, vim.log.levels.ERROR) end)
+          return
+        end
+        exchange_code(code, callback_state, "https://console.anthropic.com/oauth/code/callback")
+      end,
+    })
+    input:open()
+  end
+
+  vim.schedule(function()
+    OAuthUI.show_auth_url({
+      provider_name = "Claude Pro/Max",
+      auth_url = build_auth_url("https://console.anthropic.com/oauth/code/callback"),
+      on_open = function(ctx)
+        local server_info = OAuthServer.start()
+        if not server_info then
+          vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
+          return
+        end
+
+        OAuthServer.wait_for_callback(state, function(code)
+          exchange_code(code, state, server_info.redirect_uri)
+          OAuthServer.stop()
+        end, function(error_msg)
+          OAuthServer.stop()
+          vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
+        end)
+
+        local browser_url = build_auth_url(server_info.redirect_uri)
+        local ok, err = pcall(vim.ui.open, browser_url)
+        if ok then
+          vim.notify("Opened Claude login URL in browser", vim.log.levels.INFO)
+          ctx.close()
+        else
+          OAuthServer.stop()
+          vim.fn.setreg("+", browser_url)
+          vim.notify(
+            "Could not open browser (" .. tostring(err) .. "). URL copied to clipboard for manual flow.",
+            vim.log.levels.WARN
+          )
+          ctx.close()
+          prompt_manual_input()
+        end
+      end,
+      on_copy = function(ctx)
+        ctx.close()
+        prompt_manual_input()
+      end,
+    })
+  end)
 end
 
 --- Function to refresh an expired claude auth token

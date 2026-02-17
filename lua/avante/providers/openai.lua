@@ -355,12 +355,15 @@ local function request_tokens(body)
 end
 
 function M.setup()
-  local auth_type = Providers[Config.provider].auth_type
+  local provider = Providers[Config.provider]
+  local auth_type = provider.auth_type
 
   if auth_type == "chatgpt" then
     M.api_key_name = ""
+    provider.api_key_name = ""
   else
     M.api_key_name = "OPENAI_API_KEY"
+    provider.api_key_name = "OPENAI_API_KEY"
     require("avante.tokenizers").setup(M.tokenizer_id or "gpt-4o")
     vim.g.avante_login = true
     M._is_setup = true
@@ -416,26 +419,46 @@ function M.authenticate()
     return
   end
 
-  local server_info = OAuthServer.start()
-  if not server_info then
-    vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
-    return
+  local function build_auth_url(redirect_uri)
+    return string.format(
+      "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=%s&originator=avante",
+      auth_endpoint,
+      client_id,
+      vim.uri_encode(redirect_uri),
+      vim.uri_encode("openid profile email offline_access"),
+      challenge,
+      state
+    )
   end
 
-  local redirect_uri = server_info.redirect_uri
-  local auth_url = string.format(
-    "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=%s&originator=avante",
-    auth_endpoint,
-    client_id,
-    vim.uri_encode(redirect_uri),
-    vim.uri_encode("openid profile email offline_access"),
-    challenge,
-    state
-  )
+  local function parse_manual_code(input)
+    if not input then return nil, "Authorization input is empty" end
+    local value = vim.trim(input)
+    if value == "" then return nil, "Authorization input is empty" end
 
-  vim.schedule(function() OAuthUI.show_auth_url({ provider_name = "OpenAI Plus/Pro", auth_url = auth_url }) end)
+    local code, input_state
+    if value:match("^https?://") then
+      code = value:match("[?&]code=([^&]+)")
+      input_state = value:match("[?&]state=([^&]+)")
+      if code then code = vim.uri_decode(code) end
+      if input_state then input_state = vim.uri_decode(input_state) end
+    elseif value:find("#", 1, true) then
+      local splits = vim.split(value, "#")
+      code = splits[1]
+      input_state = splits[2]
+    else
+      code = value
+    end
 
-  OAuthServer.wait_for_callback(state, function(code)
+    if not code or code == "" then return nil, "Failed to parse authorization code" end
+    if input_state and input_state ~= "" and input_state ~= state then
+      return nil, "State mismatch - potential CSRF attack"
+    end
+
+    return code
+  end
+
+  local function exchange_code(code, redirect_uri)
     local tokens, err = request_tokens({
       grant_type = "authorization_code",
       code = code,
@@ -445,18 +468,82 @@ function M.authenticate()
     })
 
     if not tokens then
-      OAuthServer.stop()
       vim.schedule(function() vim.notify("Failed to exchange code: " .. tostring(err), vim.log.levels.ERROR) end)
       return
     end
 
     M.store_tokens(tokens)
-    OAuthServer.stop()
     vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
     M._is_setup = true
-  end, function(error_msg)
-    OAuthServer.stop()
-    vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
+  end
+
+  local function prompt_manual_input(auth_url)
+    local Input = require("avante.ui.input")
+    local input = Input:new({
+      provider = Config.input.provider,
+      title = "Enter Auth Code or Callback URL: ",
+      default = "",
+      conceal = false,
+      provider_opts = Config.input.provider_opts,
+      on_submit = function(raw)
+        local code, parse_err = parse_manual_code(raw)
+        if not code then
+          vim.schedule(function() vim.notify(parse_err, vim.log.levels.ERROR) end)
+          return
+        end
+        exchange_code(code, "http://localhost:1455/auth/callback")
+      end,
+    })
+    input:open()
+    if auth_url then
+      vim.schedule(function()
+        vim.notify("Open the copied URL, then paste the callback URL or code here.", vim.log.levels.INFO)
+      end)
+    end
+  end
+
+  vim.schedule(function()
+    OAuthUI.show_auth_url({
+      provider_name = "OpenAI Plus/Pro",
+      auth_url = build_auth_url("http://localhost:1455/auth/callback"),
+      on_open = function(ctx)
+        local server_info = OAuthServer.start()
+        if not server_info then
+          vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
+          return
+        end
+
+        OAuthServer.wait_for_callback(state,
+        function(code)
+          exchange_code(code, server_info.redirect_uri)
+          OAuthServer.stop()
+        end,
+        function(error_msg)
+          OAuthServer.stop()
+          vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
+        end)
+
+        local browser_url = build_auth_url(server_info.redirect_uri)
+        local ok, err = pcall(vim.ui.open, browser_url)
+        if ok then
+          vim.notify("Opened OpenAI login URL in browser", vim.log.levels.INFO)
+          ctx.close()
+        else
+          OAuthServer.stop()
+          vim.fn.setreg("+", browser_url)
+          vim.notify(
+            "Could not open browser (" .. tostring(err) .. "). URL copied to clipboard for manual flow.",
+            vim.log.levels.WARN
+          )
+          ctx.close()
+          prompt_manual_input(browser_url)
+        end
+      end,
+      on_copy = function(ctx)
+        ctx.close()
+        prompt_manual_input(ctx.copy_url)
+      end,
+    })
   end)
 end
 
