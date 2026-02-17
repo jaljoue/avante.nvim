@@ -11,6 +11,7 @@ local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
 local AuthStore = require("avante.auth.store")
 local OAuthServer = require("avante.auth.oauth_server")
+local OAuthUI = require("avante.ui.oauth")
 local curl = require("plenary.curl")
 
 ---@class AvanteOpenAIProvider : AvanteDefaultBaseProvider
@@ -432,13 +433,7 @@ function M.authenticate()
     state
   )
 
-  vim.schedule(function()
-    local open_success = pcall(vim.ui.open, auth_url)
-    if not open_success then
-      vim.fn.setreg("+", auth_url)
-      vim.notify("Copied URL to Clipboard, please open this URL in your browser:\n" .. auth_url, vim.log.levels.WARN)
-    end
-  end)
+  vim.schedule(function() OAuthUI.show_auth_url({ provider_name = "OpenAI Plus/Pro", auth_url = auth_url }) end)
 
   OAuthServer.wait_for_callback(state, function(code)
     local tokens, err = request_tokens({
