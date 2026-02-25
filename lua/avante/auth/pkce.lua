@@ -1,81 +1,32 @@
 local M = {}
+local uv = vim.uv
 
----Return OS name when possible (e.g. "Darwin", "Linux").
----@return string|nil
-local function get_os_name()
-  local uname = vim.uv.os_uname()
-  if uname and uname.sysname then return uname.sysname end
-
-  if type(jit) == "table" and jit.os then return jit.os end
-
-  return nil
+-- Generates sha256 bytes with vim.fn
+local function sha256_bytes(data)
+  -- vim.fn.sha256 returns hex string (64 chars)
+  local hex = vim.fn.sha256(data)
+  -- vim.text.hexdecode returns raw bytes
+  return vim.text.hexdecode(hex)
 end
 
-local function is_macos()
-  local os_name = get_os_name()
-  return os_name == "Darwin" or os_name == "OSX"
-end
+local function windows_random_bytes(n)
+  local ps = [[
+    $bytes = New-Object byte[] (]] .. n .. [[);
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes);
+    [Convert]::ToBase64String($bytes)
+  ]]
 
-local function load_commoncrypto(ffi)
-  local candidates = { "CommonCrypto", "/usr/lib/system/libcommonCrypto.dylib" }
-  for _, path in ipairs(candidates) do
-    local ok2, lib2 = pcall(ffi.load, path)
-    if ok2 then return lib2, nil end
+  local result = vim.system({ "powershell", "-NoProfile", "-Command", ps }):wait()
+  if result.code ~= 0 then
+    return nil, result.stderr
   end
 
-  return nil, "Failed to load CommonCrypto"
-end
-
-local function commoncrypto_random_bytes(ffi, n)
-  local lib, lib_err = load_commoncrypto(ffi)
-  if not lib then return nil, lib_err end
-
-  local cdef_ok = pcall(
-    ffi.cdef,
-    [[
-      typedef int32_t CCRNGStatus;
-      CCRNGStatus CCRandomGenerateBytes(void *bytes, size_t count);
-    ]]
-  )
-  if not cdef_ok then
-    return nil, "Failed to define CommonCrypto CCRandomGenerateBytes"
+  local decoded = vim.base64.decode(vim.trim(result.stdout))
+  if not decoded or #decoded ~= n then
+    return nil, "failed to decode bytes"
   end
 
-  local buf = ffi.new("unsigned char[?]", n)
-  if lib.CCRandomGenerateBytes(buf, n) == 0 then
-    return ffi.string(buf, n), nil
-  end
-
-  return nil, "CommonCrypto CCRandomGenerateBytes failed"
-end
-
-local function commoncrypto_sha256(ffi, data)
-  local lib, lib_err = load_commoncrypto(ffi)
-  if not lib then return nil, lib_err end
-
-  local cdef_ok = pcall(
-    ffi.cdef,
-    [[
-      unsigned char *CC_SHA256(const void *data, size_t len, unsigned char *md);
-    ]]
-  )
-  if not cdef_ok then
-    return nil, "Failed to define CommonCrypto CC_SHA256"
-  end
-
-  local digest = ffi.new("unsigned char[32]")
-  lib.CC_SHA256(data, #data, digest)
-  return ffi.string(digest, 32), nil
-end
-
----Load OpenSSL's crypto library.
----@param ffi any
----@return any|nil lib
----@return string|nil error
-local function load_openssl_crypto(ffi)
-  local lib_ok, lib = pcall(ffi.load, "crypto")
-  if lib_ok then return lib, nil end
-  return nil, "Failed to load OpenSSL crypto library - please install OpenSSL"
+  return decoded, nil
 end
 
 ---Generates a random N number of bytes using crypto lib over ffi, falling back to urandom
@@ -83,31 +34,22 @@ end
 ---@return string|nil bytes string of bytes generated, or nil if all methods fail
 ---@return string|nil error error message if generation failed
 local function get_random_bytes(n)
-  local ok, ffi = pcall(require, "ffi")
-  if ok then
-    local commoncrypto_err
-    if is_macos() then
-      local bytes, cc_err = commoncrypto_random_bytes(ffi, n)
-      if bytes then return bytes, nil end
-      commoncrypto_err = cc_err
-    end
+  if type(uv.random) == "function" then
+    local ok, err_or_bytes, maybe_bytes = pcall(uv.random, n)
+    if ok then
+      if type(err_or_bytes) == "string" and maybe_bytes == nil then
+        if #err_or_bytes == n then
+          return err_or_bytes
 
-    local lib, lib_err = load_openssl_crypto(ffi)
-    if lib then
-      local cdef_ok = pcall(
-        ffi.cdef,
-        [[
-        int RAND_bytes(unsigned char *buf, int num);
-      ]]
-      )
-      if cdef_ok then
-        local buf = ffi.new("unsigned char[?]", n)
-        if lib.RAND_bytes(buf, n) == 1 then return ffi.string(buf, n), nil end
+        end
+      else
+        local err = err_or_bytes
+        local bytes = maybe_bytes
+        if err == 0 and type(bytes) == "string" and #bytes == n then
+          return bytes
+        end
       end
-      return nil, "OpenSSL RAND_bytes failed - OpenSSL may not be properly installed"
     end
-
-    return nil, lib_err or commoncrypto_err or "Failed to load OpenSSL crypto library - please install OpenSSL"
   end
 
   -- Fallback
@@ -115,6 +57,13 @@ local function get_random_bytes(n)
   if f then
     local bytes = f:read(n)
     f:close()
+    return bytes, nil
+  end
+
+  local bytes, err = windows_random_bytes(n)
+  if err ~= nil or #bytes ~= n then
+    return nil, err or "Failed to generate random bytes using powershell"
+  elseif #bytes == n then
     return bytes, nil
   end
 
@@ -144,36 +93,7 @@ end
 ---@return string|nil challenge String representing pkce challenge or nil if generation fails
 ---@return string|nil error error message if generation failed
 function M.generate_challenge(verifier)
-  local ok, ffi = pcall(require, "ffi")
-  if ok then
-    local commoncrypto_err
-    if is_macos() then
-      local digest, cc_err = commoncrypto_sha256(ffi, verifier)
-      if digest then return base64url_encode(digest), nil end
-      commoncrypto_err = cc_err
-    end
-
-    local lib, lib_err = load_openssl_crypto(ffi)
-    if lib then
-      local cdef_ok = pcall(
-        ffi.cdef,
-        [[
-        typedef unsigned char SHA256_DIGEST[32];
-        void SHA256(const unsigned char *d, size_t n, SHA256_DIGEST md);
-      ]]
-      )
-      if cdef_ok then
-        local digest = ffi.new("SHA256_DIGEST")
-        lib.SHA256(verifier, #verifier, digest)
-        return base64url_encode(ffi.string(digest, 32)), nil
-      end
-      return nil, "Failed to define SHA256 function - OpenSSL may not be properly configured"
-    end
-
-    return nil, lib_err or commoncrypto_err or "Failed to load OpenSSL crypto library - please install OpenSSL"
-  end
-
-  return nil, "FFI not available - LuaJIT is required for PKCE authentication"
+  return base64url_encode(sha256_bytes(verifier)), nil
 end
 
 return M
