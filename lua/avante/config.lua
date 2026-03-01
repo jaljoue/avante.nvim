@@ -555,8 +555,8 @@ M._defaults = {
     enable_token_counting = true,
     use_cwd_as_project_root = false,
     auto_focus_on_diff_view = false,
-    ---@type boolean | string[] -- true: auto-approve all tools, false: normal prompts, string[]: auto-approve specific tools by name
-    auto_approve_tool_permissions = true, -- Default: auto-approve all tools (no prompts)
+    ---@type boolean | string[] -- true: auto-approve tools by default, false: normal prompts, string[]: auto-approve specific tools by name
+    auto_approve_tool_permissions = true, -- Default: auto-approve tools. Edit/diff changes still require confirmation when enable_fastapply=false.
     auto_check_diagnostics = true,
     allow_access_to_git_ignored_files = false,
     enable_fastapply = false,

@@ -61,9 +61,12 @@ function M.confirm(message, callback, confirm_opts, session_ctx, tool_name)
 
   -- Check behaviour.auto_approve_tool_permissions config for auto-approval
   local auto_approve = Config.behaviour.auto_approve_tool_permissions
+  local needs_edit_confirmation = not Config.behaviour.enable_fastapply
+    and (tool_name == "replace_in_file" or tool_name == "edit")
 
-  -- If auto_approve is true, auto-approve all tools
-  if auto_approve == true then
+  -- If auto_approve is true, auto-approve non-edit tools.
+  -- In non-fastapply mode, keep explicit user confirmation for edit/diff changes.
+  if auto_approve == true and not needs_edit_confirmation then
     callback(true)
     return
   end

@@ -475,7 +475,7 @@ _See [config.lua#L9](./lua/avante/config.lua) for the full config_
     minimize_diff = true, -- Whether to remove unchanged lines when applying a code block
     enable_token_counting = true, -- Whether to enable token counting. Default to true.
     auto_add_current_file = true, -- Whether to automatically add the current file when opening a new chat. Default to true.
-    auto_approve_tool_permissions = true, -- Default: auto-approve all tools (no prompts)
+    auto_approve_tool_permissions = true, -- Default: auto-approve tools; edit/diff still prompts when enable_fastapply = false
     -- Examples:
     -- auto_approve_tool_permissions = false,                -- Show permission prompts for all tools
     -- auto_approve_tool_permissions = {"bash", "str_replace"}, -- Auto-approve specific tools only
