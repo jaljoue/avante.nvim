@@ -1934,15 +1934,23 @@ local _message_to_lines_lru_cache = LRUCache:new(100)
 ---@return avante.ui.Line[]
 function Sidebar:get_message_lines(ctx, message, messages, ignore_record_prefix)
   local expanded = self.expanded_message_uuids[message.uuid]
-  if message.state == "generating" or message.is_calling then
+  local has_permission_buttons = self.permission_handler and self.permission_button_options
+  local already_rendered_permission_buttons = ctx._permission_buttons_rendered == true
+  local is_pending_message = message.state == "generating" or message.is_calling
+  local last_message = messages[#messages]
+  local is_last_message = last_message ~= nil and last_message.uuid == message.uuid
+  local should_render_permission_buttons = has_permission_buttons and not already_rendered_permission_buttons
+  local should_render_buttons_here = should_render_permission_buttons and (is_pending_message or is_last_message)
+  if is_pending_message or should_render_buttons_here then
     local lines = self:_get_message_lines(ctx, message, messages, ignore_record_prefix)
-    if self.permission_handler and self.permission_button_options then
+    if should_render_buttons_here then
       local button_group_line = ButtonGroupLine:new(self.permission_button_options, {
         on_click = self.permission_handler,
         group_label = "Waiting for Confirmation... ",
       })
       table.insert(lines, Line:new({ { "" } }))
       table.insert(lines, button_group_line)
+      ctx._permission_buttons_rendered = true
     end
     return lines
   end
