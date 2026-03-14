@@ -1162,37 +1162,53 @@ end
 
 ---@return AvanteMention[]
 function M.get_chat_mentions()
+  local Config = require("avante.config")
+  local use_sidebar_v2 = Config.experimental and Config.experimental.sidebar_v2
   local mentions = M.get_mentions()
 
-  table.insert(mentions, {
-    description = "file",
-    command = "file",
-    details = "add files...",
-    callback = function(sidebar) sidebar.file_selector:open() end,
-  })
+  if not use_sidebar_v2 then
+    table.insert(mentions, {
+      description = "file",
+      command = "file",
+      details = "add files...",
+      callback = function(sidebar) sidebar.file_selector:open() end,
+    })
 
-  table.insert(mentions, {
-    description = "dir",
-    command = "dir",
-    details = "add directories...",
-    callback = function(sidebar)
-      -- Open file selector in directory mode (Phase 2)
-      sidebar.file_selector:open({ mode = "directory" })
-    end,
-  })
+    table.insert(mentions, {
+      description = "dir",
+      command = "dir",
+      details = "add directories...",
+      callback = function(sidebar)
+        -- Open file selector in directory mode (Phase 2)
+        sidebar.file_selector:open({ mode = "directory" })
+      end,
+    })
+  end
 
   table.insert(mentions, {
     description = "quickfix",
     command = "quickfix",
     details = "add files in quickfix list to chat context",
-    callback = function(sidebar) sidebar.file_selector:add_quickfix_files() end,
+    callback = function(sidebar)
+      if use_sidebar_v2 and sidebar.add_quickfix_file_references then
+        sidebar:add_quickfix_file_references()
+      else
+        sidebar.file_selector:add_quickfix_files()
+      end
+    end,
   })
 
   table.insert(mentions, {
     description = "buffers",
     command = "buffers",
     details = "add open buffers to the chat context",
-    callback = function(sidebar) sidebar.file_selector:add_buffer_files() end,
+    callback = function(sidebar)
+      if use_sidebar_v2 and sidebar.add_buffer_file_references then
+        sidebar:add_buffer_file_references()
+      else
+        sidebar.file_selector:add_buffer_files()
+      end
+    end,
   })
 
   return mentions

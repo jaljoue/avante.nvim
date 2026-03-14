@@ -402,6 +402,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field project_context string | nil
 ---@field selected_files AvanteSelectedFile[] | nil
 ---@field selected_filepaths string[] | nil
+---@field selected_filepaths_mode? "preload_contents" | "links_only"
 ---@field diagnostics string | nil
 ---@field history_messages avante.HistoryMessage[] | nil
 ---@field get_todos? fun(): avante.TODO[]

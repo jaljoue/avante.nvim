@@ -1,7 +1,7 @@
 local api = vim.api
 
 local Utils = require("avante.utils")
-local Sidebar = require("avante.sidebar")
+local SidebarFactory = require("avante.sidebar_factory")
 local Selection = require("avante.selection")
 local Suggestion = require("avante.suggestion")
 local Config = require("avante.config")
@@ -396,6 +396,7 @@ function M._init(id)
   local suggestion = M.suggestions[id]
 
   if not sidebar then
+    local Sidebar = SidebarFactory.get_sidebar_class()
     sidebar = Sidebar:new(id)
     M.sidebars[id] = sidebar
   end
@@ -544,6 +545,7 @@ function M.setup(opts)
 
   local has_cmp, cmp = pcall(require, "cmp")
   if has_cmp then
+    local enable_sidebar_v2 = Config.experimental and Config.experimental.sidebar_v2
     M.slash_commands_id = cmp.register_source("avante_commands", require("cmp_avante.commands"):new())
 
     cmp.register_source("avante_mentions", require("cmp_avante.mentions"):new(Utils.get_chat_mentions))
@@ -551,15 +553,20 @@ function M.setup(opts)
     cmp.register_source("avante_prompt_mentions", require("cmp_avante.mentions"):new(Utils.get_mentions))
 
     cmp.register_source("avante_shortcuts", require("cmp_avante.shortcuts"):new())
+    if enable_sidebar_v2 then
+      cmp.register_source("avante_files", require("cmp_avante.files"):new())
+    end
+
+    local avante_input_sources = {
+      { name = "avante_commands" },
+      { name = "avante_mentions" },
+      { name = "avante_shortcuts" },
+    }
+    if enable_sidebar_v2 then table.insert(avante_input_sources, { name = "avante_files" }) end
 
     cmp.setup.filetype({ "AvanteInput" }, {
       enabled = true,
-      sources = {
-        { name = "avante_commands" },
-        { name = "avante_mentions" },
-        { name = "avante_shortcuts" },
-        { name = "avante_files" },
-      },
+      sources = avante_input_sources,
     })
 
     cmp.setup.filetype({ "AvantePromptInput" }, {
@@ -568,6 +575,17 @@ function M.setup(opts)
         { name = "avante_prompt_mentions" },
       },
     })
+  end
+
+  local has_blink, blink = pcall(require, "blink.cmp")
+  if has_blink and Config.experimental and Config.experimental.sidebar_v2 then
+    pcall(blink.add_source_provider, "avante_files", {
+      name = "Avante Files",
+      module = "avante.blink.source",
+      score_offset = 100,
+      opts = {},
+    })
+    pcall(blink.add_filetype_source, "AvanteInput", "avante_files")
   end
 end
 

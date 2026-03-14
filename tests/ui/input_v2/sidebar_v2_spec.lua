@@ -1,0 +1,15 @@
+local SidebarV2 = require("avante.sidebar_v2")
+
+describe("Sidebar V2", function()
+  it("should expose inline reference helpers", function()
+    assert.is_function(SidebarV2.add_selected_file_reference)
+    assert.is_function(SidebarV2.remove_selected_file_reference)
+    assert.is_function(SidebarV2.add_buffer_file_references)
+    assert.is_function(SidebarV2.add_quickfix_file_references)
+  end)
+
+  it("should not allocate selected files container height", function()
+    local height = SidebarV2.get_selected_files_container_height({})
+    assert.equals(0, height)
+  end)
+end)

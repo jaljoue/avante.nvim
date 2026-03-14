@@ -121,6 +121,36 @@ describe("Utils", function()
     end)
   end)
 
+  describe("get_chat_mentions", function()
+    it("should include file and dir mentions in v1", function()
+      local Config = require("avante.config")
+      local original = Config.experimental.sidebar_v2
+      Config.experimental.sidebar_v2 = false
+
+      local mentions = Utils.get_chat_mentions()
+      local commands = vim.iter(mentions):map(function(item) return item.command end):totable()
+      assert.is_true(vim.tbl_contains(commands, "file"))
+      assert.is_true(vim.tbl_contains(commands, "dir"))
+
+      Config.experimental.sidebar_v2 = original
+    end)
+
+    it("should remove file and dir mentions in v2", function()
+      local Config = require("avante.config")
+      local original = Config.experimental.sidebar_v2
+      Config.experimental.sidebar_v2 = true
+
+      local mentions = Utils.get_chat_mentions()
+      local commands = vim.iter(mentions):map(function(item) return item.command end):totable()
+      assert.is_false(vim.tbl_contains(commands, "file"))
+      assert.is_false(vim.tbl_contains(commands, "dir"))
+      assert.is_true(vim.tbl_contains(commands, "quickfix"))
+      assert.is_true(vim.tbl_contains(commands, "buffers"))
+
+      Config.experimental.sidebar_v2 = original
+    end)
+  end)
+
   describe("trim_think_content", function()
     it("should remove think content", function()
       local input = "<think>this should be removed</think> Hello World"

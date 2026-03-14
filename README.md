@@ -753,6 +753,26 @@ Mentions allow you to quickly reference specific features or add files to the ch
 - `@quickfix` - Add files from quickfix list to chat context
 - `@buffers` - Add open buffers to chat context
 
+When `experimental.sidebar_v2 = true`:
+
+- `@file` and `@dir` mentions are removed.
+- Typing `@` uses completion items for files/directories and inserts markdown links like `[path](file:///abs/path)`.
+- `@quickfix` and `@buffers` insert inline markdown links into the input buffer instead of populating hidden selected-file state.
+
+### Sidebar v2 (Experimental)
+
+You can opt into the inline-reference sidebar with:
+
+```lua
+{
+  experimental = {
+    sidebar_v2 = true,
+  },
+}
+```
+
+In this mode, selected file references are passed as links (metadata) for chat submits, and file contents are not preloaded from `selected_filepaths`.
+
 #### Slash Commands (`/` trigger)
 
 Built-in slash commands for common operations:

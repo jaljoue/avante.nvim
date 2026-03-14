@@ -1,78 +1,107 @@
 local Utils = require("avante.utils")
+local ReferenceLinks = require("avante.input.reference_links")
 
 local M = {}
 
 M.completion_items = {}
 
----Get file completions for @file: prefix
----@param base_path string
----@return { label: string, insertText: string, kind: string }[]
-function M.get_file_completions(base_path)
+local function get_entries(base_path)
   local project_root = Utils.get_project_root()
-  local search_dir = project_root
+  local prefix = (base_path or ""):gsub("^%./", "")
+  local entries = Utils.scan_directory({ directory = project_root, add_dirs = true })
 
-  if base_path and base_path ~= "" then
-    local potential_dir = Utils.join_paths(project_root, base_path)
-    if vim.fn.isdirectory(potential_dir) == 1 then
-      search_dir = potential_dir
-    else
-      local parent = vim.fn.fnamemodify(potential_dir, ":h")
-      if vim.fn.isdirectory(parent) == 1 then search_dir = parent end
-    end
-  end
-
-  local items = {}
-  local files = Utils.scan_directory({ directory = search_dir, add_dirs = false })
-
-  for _, filepath in ipairs(files) do
-    local rel_path = Utils.make_relative_path(filepath, project_root)
-    local filename = vim.fn.fnamemodify(filepath, ":t")
-    table.insert(items, {
-      label = rel_path,
-      insertText = rel_path,
-      kind = "File",
-      documentation = filepath,
-    })
-  end
-
-  table.sort(items, function(a, b) return a.label < b.label end)
-  return items
-end
-
----Get directory completions for @dir: prefix
----@param base_path string
----@return { label: string, insertText: string, kind: string }[]
-function M.get_directory_completions(base_path)
-  local project_root = Utils.get_project_root()
-  local search_dir = project_root
-
-  if base_path and base_path ~= "" then
-    local potential_dir = Utils.join_paths(project_root, base_path)
-    if vim.fn.isdirectory(potential_dir) == 1 then
-      search_dir = potential_dir
-    else
-      local parent = vim.fn.fnamemodify(potential_dir, ":h")
-      if vim.fn.isdirectory(parent) == 1 then search_dir = parent end
-    end
-  end
-
-  local items = {}
-  local all_entries = Utils.scan_directory({ directory = search_dir, add_dirs = true })
-
-  for _, entry in ipairs(all_entries) do
-    if vim.fn.isdirectory(entry) == 1 then
-      local rel_path = Utils.make_relative_path(entry, project_root)
-      table.insert(items, {
-        label = rel_path .. "/",
-        insertText = rel_path,
-        kind = "Folder",
-        documentation = entry,
+  local filtered = {}
+  for _, entry in ipairs(entries) do
+    local rel_path = Utils.make_relative_path(entry, project_root)
+    if prefix == "" or vim.startswith(rel_path, prefix) then
+      table.insert(filtered, {
+        abs_path = entry,
+        rel_path = rel_path,
+        is_dir = vim.fn.isdirectory(entry) == 1,
       })
     end
   end
 
-  table.sort(items, function(a, b) return a.label < b.label end)
+  table.sort(filtered, function(a, b)
+    if a.is_dir ~= b.is_dir then return a.is_dir end
+    return a.rel_path < b.rel_path
+  end)
+
+  return filtered
+end
+
+---Get file completions for an @ prefix
+---@param base_path string
+---@return { label: string, insertText: string, kind: string, documentation: string, abs_path: string, rel_path: string }[]
+function M.get_file_completions(base_path)
+  local entries = get_entries(base_path)
+  local items = {}
+
+  for _, entry in ipairs(entries) do
+    if not entry.is_dir then
+      table.insert(items, {
+        label = entry.rel_path,
+        insertText = ReferenceLinks.to_markdown_link(entry.abs_path),
+        kind = "File",
+        documentation = entry.abs_path,
+        abs_path = entry.abs_path,
+        rel_path = entry.rel_path,
+      })
+    end
+  end
+
   return items
+end
+
+---Get directory completions for an @ prefix
+---@param base_path string
+---@return { label: string, insertText: string, kind: string, documentation: string, abs_path: string, rel_path: string }[]
+function M.get_directory_completions(base_path)
+  local entries = get_entries(base_path)
+  local items = {}
+
+  for _, entry in ipairs(entries) do
+    if entry.is_dir then
+      table.insert(items, {
+        label = entry.rel_path .. "/",
+        insertText = ReferenceLinks.to_markdown_link(entry.abs_path),
+        kind = "Folder",
+        documentation = entry.abs_path,
+        abs_path = entry.abs_path,
+        rel_path = entry.rel_path,
+      })
+    end
+  end
+
+  return items
+end
+
+---@param base_path string
+---@param opts? { include_files?: boolean, include_dirs?: boolean, limit?: integer }
+---@return { label: string, insertText: string, kind: string, documentation: string, abs_path: string, rel_path: string }[]
+function M.get_at_completions(base_path, opts)
+  opts = opts or {}
+  local include_files = opts.include_files ~= false
+  local include_dirs = opts.include_dirs ~= false
+  local limit = opts.limit or 200
+
+  local items = {}
+  if include_dirs then vim.list_extend(items, M.get_directory_completions(base_path)) end
+  if include_files then vim.list_extend(items, M.get_file_completions(base_path)) end
+
+  table.sort(items, function(a, b) return a.label < b.label end)
+
+  if #items > limit then items = vim.list_slice(items, 1, limit) end
+  return items
+end
+
+---@param before string
+---@return integer | nil, string | nil
+function M.find_at_token(before)
+  local start = before:match(".*()@[^%s]*$")
+  if not start then return nil, nil end
+  local prefix = before:match("@([^%s]*)$") or ""
+  return start, prefix
 end
 
 ---Setup completion for a buffer
@@ -93,14 +122,8 @@ function M.complete(findstart, base)
     local col = vim.api.nvim_win_get_cursor(0)[2]
     local before = line:sub(1, col)
 
-    local start = before:find("@file:$") or before:find("@dir:$")
+    local start = M.find_at_token(before)
     if start then return start end
-
-    start = before:find("@file:[^[:space:]*$") or before:find("@dir:[^[:space:]*$")
-    if start then
-      local prefix = before:match("@file:([^[:space:]*$)") or before:match("@dir:([^[:space:]*$)")
-      return start + (prefix and #prefix + 1 or 0)
-    end
 
     return -1
   end
@@ -108,40 +131,21 @@ function M.complete(findstart, base)
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2]
   local before = line:sub(1, col)
+  local _, prefix = M.find_at_token(before)
+  if not prefix then return {} end
 
-  if before:match("@file:[^[:space:]*$") then
-    local base_path = before:match("@file:([^[:space:]*$)") or ""
-    local items = M.get_file_completions(base_path)
-    return vim.tbl_map(function(item)
-      return {
-        word = item.insertText,
-        abbr = item.label,
-        menu = "file",
-        info = item.documentation,
-        kind = item.kind,
-        icase = 1,
-        dup = 0,
-      }
-    end, items)
-  end
-
-  if before:match("@dir:[^[:space:]*$") then
-    local base_path = before:match("@dir:([^[:space:]*$)") or ""
-    local items = M.get_directory_completions(base_path)
-    return vim.tbl_map(function(item)
-      return {
-        word = item.insertText,
-        abbr = item.label,
-        menu = "dir",
-        info = item.documentation,
-        kind = item.kind,
-        icase = 1,
-        dup = 0,
-      }
-    end, items)
-  end
-
-  return {}
+  local items = M.get_at_completions(prefix)
+  return vim.tbl_map(function(item)
+    return {
+      word = item.insertText,
+      abbr = item.label,
+      menu = item.kind == "Folder" and "dir" or "file",
+      info = item.documentation,
+      kind = item.kind,
+      icase = 1,
+      dup = 0,
+    }
+  end, items)
 end
 
 return M
