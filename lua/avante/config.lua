@@ -797,7 +797,7 @@ M._defaults = {
   input = {
     provider = "native",
     provider_opts = {},
-    enable_markdown = false, -- Enable markdown rendering in input buffers (requires render-markdown.nvim)
+    enable_markdown = false, -- Enable markdown rendering in sidebar_v2 input buffers (requires render-markdown.nvim)
   },
   suggestion = {
     debounce = 600,

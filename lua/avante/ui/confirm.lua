@@ -3,6 +3,7 @@ local NuiText = require("nui.text")
 local Highlights = require("avante.highlights")
 local Utils = require("avante.utils")
 local Line = require("avante.ui.line")
+local PromptInput = require("avante.ui.prompt_input")
 local Config = require("avante.config")
 
 ---@class avante.ui.Confirm
@@ -182,7 +183,7 @@ function M:open()
       return
     end
 
-    local prompt_input = require("avante.input").new({
+    local prompt_input = PromptInput:new({
       submit_callback = function(input)
         self:close()
         callback("no", input ~= "" and input or nil)

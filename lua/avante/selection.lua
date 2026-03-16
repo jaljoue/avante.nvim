@@ -3,6 +3,7 @@ local Config = require("avante.config")
 local Llm = require("avante.llm")
 local Provider = require("avante.providers")
 local RepoMap = require("avante.repo_map")
+local PromptInput = require("avante.ui.prompt_input")
 local SelectionResult = require("avante.selection_result")
 local Range = require("avante.range")
 
@@ -289,7 +290,7 @@ function Selection:create_editing_input(request, line1, line2)
       priority = PRIORITY,
     })
 
-  local prompt_input = require("avante.input").new({
+  local prompt_input = PromptInput:new({
     default_value = request,
     submit_callback = function(input) self:submit_input(input) end,
     cancel_callback = function() self:close_editing_input() end,

@@ -22,7 +22,7 @@ local Line = require("avante.ui.line")
 local LRUCache = require("avante.utils.lru_cache")
 local logo = require("avante.utils.logo")
 local ButtonGroupLine = require("avante.ui.button_group_line")
-local SidebarInput = require("avante.input").get_sidebar_input()
+local SidebarInput = require("avante.input.sidebar")
 local ReferenceLinks = require("avante.input.reference_links")
 
 local function render_markdown(bufnr)

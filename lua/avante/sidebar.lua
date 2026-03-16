@@ -22,13 +22,6 @@ local Line = require("avante.ui.line")
 local LRUCache = require("avante.utils.lru_cache")
 local logo = require("avante.utils.logo")
 local ButtonGroupLine = require("avante.ui.button_group_line")
-local SidebarInput = require("avante.input").get_sidebar_input()
-
-local function render_markdown(bufnr)
-  local ok, render_markdown_api = pcall(require, "render-markdown")
-  if not ok then return end
-  pcall(render_markdown_api.render, { buf = bufnr, event = "AvanteSidebarInput" })
-end
 
 local RESULT_BUF_NAME = "AVANTE_RESULT"
 local VIEW_BUFFER_UPDATED_PATTERN = "AvanteViewBufferUpdated"
@@ -3022,8 +3015,6 @@ function Sidebar:create_input_container()
   end
 
   api.nvim_set_option_value("filetype", "AvanteInput", { buf = self.containers.input.bufnr })
-  SidebarInput.configure_input_buffer(self)
-  if Config.input.enable_markdown then render_markdown(self.containers.input.bufnr) end
 
   -- Setup completion
   api.nvim_create_autocmd("InsertEnter", {
@@ -3043,7 +3034,6 @@ function Sidebar:create_input_container()
     callback = function()
       debounced_show_input_hint()
       place_sign_at_first_line(self.containers.input.bufnr)
-      if Config.input.enable_markdown then render_markdown(self.containers.input.bufnr) end
     end,
   })
 
