@@ -1,7 +1,7 @@
 local api = vim.api
 
 local Utils = require("avante.utils")
-local SidebarFactory = require("avante.sidebar_factory")
+local Sidebar = require("avante.sidebar")
 local Selection = require("avante.selection")
 local Suggestion = require("avante.suggestion")
 local Config = require("avante.config")
@@ -396,8 +396,7 @@ function M._init(id)
   local suggestion = M.suggestions[id]
 
   if not sidebar then
-    local Sidebar = SidebarFactory.get_sidebar_class()
-    sidebar = Sidebar:new(id)
+    sidebar = Sidebar.get_sidebar_class():new(id)
     M.sidebars[id] = sidebar
   end
   if not selection then

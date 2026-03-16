@@ -11,11 +11,11 @@ describe("API compatibility for sidebar v2", function()
     package.loaded["avante"] = original_avante
   end)
 
-  it("should route add_selected_file to inline reference method when available", function()
+  it("should route add_selected_file to the shared sidebar method", function()
     local called
     local sidebar = {
       is_open = function() return true end,
-      add_selected_file_reference = function(_, path)
+      add_selected_file = function(_, path)
         called = path
       end,
     }
@@ -30,11 +30,11 @@ describe("API compatibility for sidebar v2", function()
     assert.equals("lua/avante/init.lua", called)
   end)
 
-  it("should route add_buffer_files to inline reference method when available", function()
+  it("should route add_buffer_files to the shared sidebar method", function()
     local called = false
     local sidebar = {
       is_open = function() return true end,
-      add_buffer_file_references = function()
+      add_buffer_files = function()
         called = true
       end,
     }

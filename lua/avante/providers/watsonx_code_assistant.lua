@@ -158,7 +158,7 @@ M.method_command = function(command_name)
     sidebar = require("avante").get()
   end
   if not sidebar:is_open() then sidebar:open({}) end
-  sidebar.file_selector:add_current_buffer()
+  sidebar:add_current_buffer_file()
 
   local response_content = ""
   local provider = P[Config.provider]
@@ -170,7 +170,7 @@ M.method_command = function(command_name)
       messages = {
         { content = content, role = "user" },
       },
-      selected_files = sidebar.file_selector:get_selected_files_contents(),
+      selected_files = sidebar:get_selected_files_contents(),
     },
     handler_opts = {
       on_start = function(_) end,

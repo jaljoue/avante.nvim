@@ -1163,10 +1163,9 @@ end
 ---@return AvanteMention[]
 function M.get_chat_mentions()
   local Config = require("avante.config")
-  local use_sidebar_v2 = Config.experimental and Config.experimental.sidebar_v2
   local mentions = M.get_mentions()
 
-  if not use_sidebar_v2 then
+  if not (Config.experimental and Config.experimental.sidebar_v2) then
     table.insert(mentions, {
       description = "file",
       command = "file",
@@ -1189,26 +1188,14 @@ function M.get_chat_mentions()
     description = "quickfix",
     command = "quickfix",
     details = "add files in quickfix list to chat context",
-    callback = function(sidebar)
-      if use_sidebar_v2 and sidebar.add_quickfix_file_references then
-        sidebar:add_quickfix_file_references()
-      else
-        sidebar.file_selector:add_quickfix_files()
-      end
-    end,
+    callback = function(sidebar) sidebar:add_quickfix_files() end,
   })
 
   table.insert(mentions, {
     description = "buffers",
     command = "buffers",
     details = "add open buffers to the chat context",
-    callback = function(sidebar)
-      if use_sidebar_v2 and sidebar.add_buffer_file_references then
-        sidebar:add_buffer_file_references()
-      else
-        sidebar.file_selector:add_buffer_files()
-      end
-    end,
+    callback = function(sidebar) sidebar:add_buffer_files() end,
   })
 
   return mentions

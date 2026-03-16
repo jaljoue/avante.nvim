@@ -279,11 +279,7 @@ function M.add_buffer_files()
     sidebar = require("avante").get()
   end
   if not sidebar:is_open() then sidebar:open({}) end
-  if sidebar.add_buffer_file_references then
-    sidebar:add_buffer_file_references()
-  else
-    sidebar.file_selector:add_buffer_files()
-  end
+  sidebar:add_buffer_files()
 end
 
 function M.add_selected_file(filepath)
@@ -295,11 +291,7 @@ function M.add_selected_file(filepath)
     sidebar = require("avante").get()
   end
   if not sidebar:is_open() then sidebar:open({}) end
-  if sidebar.add_selected_file_reference then
-    sidebar:add_selected_file_reference(rel_path)
-  else
-    sidebar.file_selector:add_selected_file(rel_path)
-  end
+  sidebar:add_selected_file(rel_path)
 end
 
 function M.remove_selected_file(filepath)
@@ -321,11 +313,7 @@ function M.remove_selected_file(filepath)
 
   for _, file in ipairs(files) do
     local rel_path = Utils.uniform_path(file)
-    if sidebar.remove_selected_file_reference then
-      sidebar:remove_selected_file_reference(rel_path)
-    else
-      sidebar.file_selector:remove_selected_file(rel_path)
-    end
+    sidebar:remove_selected_file(rel_path)
   end
 end
 
