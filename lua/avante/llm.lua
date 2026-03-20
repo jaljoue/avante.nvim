@@ -1769,6 +1769,7 @@ function M._stream(opts)
   ---@cast provider AvanteProviderFunctor
 
   local prompt_opts = M.generate_prompts(opts)
+  prompt_opts.session_ctx = opts.session_ctx
 
   if
     prompt_opts.pending_compaction_history_messages
@@ -1800,6 +1801,7 @@ function M._stream(opts)
     update_tokens_usage = opts.update_tokens_usage,
     on_start = opts.on_start,
     on_chunk = opts.on_chunk,
+    session_ctx = opts.session_ctx,
     on_stop = function(stop_opts)
       if stop_opts.usage and opts.update_tokens_usage then opts.update_tokens_usage(stop_opts.usage) end
 

@@ -132,6 +132,9 @@ vim.g.avante_login = vim.g.avante_login
 ---@field image_paths? string[]
 ---@field tools? AvanteLLMTool[]
 ---@field pending_compaction_history_messages? AvanteLLMMessage[]
+---@field session_id? string
+---@field session_ctx? table
+---@field force_include_tool_calls? boolean
 ---
 ---@class AvanteGeminiMessage
 ---@field role "user"

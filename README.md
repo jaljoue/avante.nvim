@@ -440,9 +440,14 @@ _See [config.lua#L9](./lua/avante/config.lua) for the full config_
   -- Of course, you can reduce the request frequency by increasing `suggestion.debounce`.
   auto_suggestions_provider = "claude",
   providers = {
+    openai = {
+      endpoint = "https://api.openai.com/v1",
+      auth_type = "api", -- Set to "chatgpt" to sign in with ChatGPT subscription
+      model = "gpt-4o",
+    },
     claude = {
       endpoint = "https://api.anthropic.com",
-      auth_type = "api" -- Set to "max" to sign in with Claude Pro/Max subscription
+      auth_type = "api", -- Set to "max" to sign in with Claude Pro/Max subscription
       model = "claude-3-5-sonnet-20241022",
       extra_request_body = {
         temperature = 0.75,
@@ -840,7 +845,7 @@ Here's a complete blink.cmp configuration example with all Avante sources:
 ## Usage
 
 ### Using Claude Pro/Max Subscription
-To login with your Claude subscription, set the **auth_type** of the Claude provider entry in your config to "max", re-open Neovim then the authentication process will start in your browser. Once logged in and authorized, a code will show that needs to be copied into the prompt in Neovim, which should then give access to use your subscription with Avante.
+To login with your Claude subscription, set the **auth_type** of the Claude provider entry in your config to "max", re-open Neovim then the authentication process will start in your browser. Once logged in and authorized, a code will show that needs to be copied into the prompt in Neovim, which should then give access to use your subscription with Avante. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
 
 You may need to run `AvanteSwitchProvider claude` to initiate the authentication if you previously had a different provider selected.
 
@@ -850,6 +855,21 @@ You may need to run `AvanteSwitchProvider claude` to initiate the authentication
   claude = {
     -- ...
     auth_type = "max",
+  },
+
+```
+
+### Using ChatGPT Subscription
+To login with your ChatGPT subscription, set the **auth_type** of the OpenAI provider entry in your config to "chatgpt", re-open Neovim then the authentication process will start in your browser and return automatically after authorization. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
+
+You may need to run `AvanteSwitchProvider openai` to initiate the authentication if you previously had a different provider selected.
+
+```lua
+-- Providers = { ...
+
+  openai = {
+    -- ...
+    auth_type = "chatgpt",
   },
 
 ```
