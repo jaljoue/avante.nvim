@@ -516,6 +516,26 @@ Avante.nvim 提供了多个可以与 blink.cmp 集成的补全项：
 - `@quickfix` - 将快速修复列表中的文件添加到聊天上下文
 - `@buffers` - 将打开的缓冲区添加到聊天上下文
 
+当 `experimental.sidebar_v2 = true` 时：
+
+- `@file` 和 `@dir` 提及将被移除；
+- 输入 `@` 会直接补全文件/目录，并插入 Markdown 链接（例如 `[path](file:///abs/path)`）；
+- `@quickfix` 与 `@buffers` 会把内联 Markdown 链接插入输入框，而不是写入隐藏的 selected-files 状态。
+
+### Sidebar v2（实验性）
+
+可通过以下配置启用内联引用侧边栏：
+
+```lua
+{
+  experimental = {
+    sidebar_v2 = true,
+  },
+}
+```
+
+在该模式下，聊天提交会传递链接引用元数据，不会再根据 `selected_filepaths` 预加载文件内容。
+
 #### 斜杠命令 (`/` 触发器)
 内置斜杠命令用于常见操作：
 

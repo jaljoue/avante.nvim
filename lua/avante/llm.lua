@@ -283,7 +283,8 @@ function M.generate_prompts(opts)
   local system_info = Utils.get_system_info()
 
   local selected_files = opts.selected_files or {}
-  if opts.selected_filepaths then
+  local selected_filepaths_mode = opts.selected_filepaths_mode or "preload_contents"
+  if opts.selected_filepaths and selected_filepaths_mode == "preload_contents" then
     for _, filepath in ipairs(opts.selected_filepaths) do
       local lines, error = Utils.read_file_from_buf_or_disk(filepath)
       if error ~= nil then

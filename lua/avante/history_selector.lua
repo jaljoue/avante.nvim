@@ -59,7 +59,7 @@ function M.open(bufnr, cb)
     end,
     get_preview_content = function(item_id)
       local history = Path.history.load(vim.api.nvim_get_current_buf(), item_id)
-      local Sidebar = require("avante.sidebar")
+      local Sidebar = require("avante.sidebar").get_sidebar_class()
       local content = Sidebar.render_history_content(history)
       return content, "markdown"
     end,

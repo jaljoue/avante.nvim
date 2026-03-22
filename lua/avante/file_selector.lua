@@ -327,4 +327,70 @@ function FileSelector:add_buffer_files()
   end
 end
 
+---Convert URI to absolute file path
+---@param uri string
+---@return string | nil absolute_path
+function FileSelector:resolve_uri_to_path(uri)
+  if not uri then return nil end
+  local path = uri:gsub("^file://", "")
+  if path == uri then return nil end
+  return Utils.to_absolute_path(path)
+end
+
+---Convert selected filepaths to URI format
+---@return string[] uris
+function FileSelector:get_selected_file_uris()
+  local uris = {}
+  for _, path in ipairs(self.selected_filepaths) do
+    table.insert(uris, "file://" .. path)
+  end
+  return uris
+end
+
+---Open file selector in directory mode
+---@param opts? { mode?: "file" | "directory" }
+function FileSelector:open(opts)
+  opts = opts or {}
+  if opts.mode == "directory" then
+    self:show_directory_selector_ui()
+  else
+    self:show_selector_ui()
+  end
+end
+
+---@return nil
+function FileSelector:show_directory_selector_ui()
+  local project_root = Utils.get_project_root()
+  local dirs = Utils.scan_directory({ directory = project_root, add_dirs = true })
+
+  local dir_items = vim
+    .iter(dirs)
+    :filter(function(path) return vim.fn.isdirectory(path) == 1 end)
+    :map(function(path)
+      local rel_path = Utils.make_relative_path(path, project_root)
+      return { id = path, title = rel_path .. "/" }
+    end)
+    :totable()
+
+  table.sort(dir_items, function(a, b) return a.title < b.title end)
+
+  local selector = Selector:new({
+    provider = Config.selector.provider,
+    title = "(Avante) Add a directory",
+    items = dir_items,
+    provider_opts = Config.selector.provider_opts,
+    on_select = function(item_ids)
+      if not item_ids then return end
+      for _, dir_path in ipairs(item_ids) do
+        local absolute_path = Utils.to_absolute_path(dir_path)
+        if vim.fn.isdirectory(absolute_path) == 1 then
+          self:process_directory(absolute_path)
+        end
+      end
+      self:emit("update")
+    end,
+  })
+  selector:open()
+end
+
 return FileSelector

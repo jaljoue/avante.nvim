@@ -1056,7 +1056,7 @@ function M.path_exists(path) return M.path.is_exist(path) end
 function M.is_first_letter_uppercase(str) return string.match(str, "^[A-Z]") ~= nil end
 
 ---@param content string
----@return { new_content: string, enable_project_context: boolean, enable_diagnostics: boolean }
+---@return { new_content: string, enable_project_context: boolean, enable_diagnostics: boolean, file_references: avante.ParsedFileReference[] }
 function M.extract_mentions(content)
   -- if content contains @codebase, enable project context and remove @codebase
   local new_content = content
@@ -1067,11 +1067,81 @@ function M.extract_mentions(content)
     new_content = content:gsub("@codebase", "")
   end
   if content:match("@diagnostics") then enable_diagnostics = true end
+
+  -- Parse file and directory references
+  local file_references = M.parse_file_references(content)
+
   return {
     new_content = new_content,
     enable_project_context = enable_project_context,
     enable_diagnostics = enable_diagnostics,
+    file_references = file_references,
   }
+end
+
+---@class avante.ParsedFileReference
+---@field type "file" | "directory"
+---@field uri string  -- The full URI (e.g., file:///path/to/file)
+---@field display_name string | nil
+---@field path string  -- The path component without file:// prefix
+
+---Parse file references from markdown content for validation/display purposes
+---Supports multiple formats:
+--- - Markdown links: [name](file:///path)
+--- - @file:path/to/file syntax
+--- - @dir:path/to/directory syntax
+---@param content string
+---@return avante.ParsedFileReference[]
+function M.parse_file_references(content)
+  local refs = {}
+
+  local cursor = 1
+  while cursor <= #content do
+    local file_start, file_end, file_path = content:find("@file:([^%s%]]+)", cursor)
+    local dir_start, dir_end, dir_path = content:find("@dir:([^%s%]]+)", cursor)
+    local md_start, md_end, display_name, md_path = content:find("%[([^%]]+)%]%(file://([^)]+)%)", cursor)
+
+    local next_type, next_start, next_end, path, display
+
+    if file_start then
+      next_type, next_start, next_end, path = "file", file_start, file_end, file_path
+    end
+
+    if dir_start and (not next_start or dir_start < next_start) then
+      next_type, next_start, next_end, path, display = "directory", dir_start, dir_end, dir_path, nil
+    end
+
+    if md_start and (not next_start or md_start < next_start) then
+      next_type, next_start, next_end, path, display = "file", md_start, md_end, md_path, display_name
+    end
+
+    if not next_start then break end
+
+    table.insert(refs, {
+      type = next_type,
+      uri = "file://" .. path,
+      display_name = display,
+      path = path,
+    })
+
+    cursor = next_end + 1
+  end
+
+  return refs
+end
+
+---Validate that a file or directory URI is accessible (lightweight check, not full read)
+---@param uri string
+---@return boolean accessible
+---@return string | nil error_message
+function M.validate_file_uri(uri)
+  local path = uri:gsub("^file://", "")
+  local absolute_path = M.to_absolute_path(path)
+
+  local stat = vim.uv.fs_stat(absolute_path)
+  if not stat then return false, "Path not found: " .. path end
+
+  return true, nil
 end
 
 ---@return AvanteMention[]
@@ -1092,27 +1162,40 @@ end
 
 ---@return AvanteMention[]
 function M.get_chat_mentions()
+  local Config = require("avante.config")
   local mentions = M.get_mentions()
 
-  table.insert(mentions, {
-    description = "file",
-    command = "file",
-    details = "add files...",
-    callback = function(sidebar) sidebar.file_selector:open() end,
-  })
+  if not (Config.experimental and Config.experimental.sidebar_v2) then
+    table.insert(mentions, {
+      description = "file",
+      command = "file",
+      details = "add files...",
+      callback = function(sidebar) sidebar.file_selector:open() end,
+    })
+
+    table.insert(mentions, {
+      description = "dir",
+      command = "dir",
+      details = "add directories...",
+      callback = function(sidebar)
+        -- Open file selector in directory mode (Phase 2)
+        sidebar.file_selector:open({ mode = "directory" })
+      end,
+    })
+  end
 
   table.insert(mentions, {
     description = "quickfix",
     command = "quickfix",
     details = "add files in quickfix list to chat context",
-    callback = function(sidebar) sidebar.file_selector:add_quickfix_files() end,
+    callback = function(sidebar) sidebar:add_quickfix_files() end,
   })
 
   table.insert(mentions, {
     description = "buffers",
     command = "buffers",
     details = "add open buffers to the chat context",
-    callback = function(sidebar) sidebar.file_selector:add_buffer_files() end,
+    callback = function(sidebar) sidebar:add_buffer_files() end,
   })
 
   return mentions

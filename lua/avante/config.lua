@@ -530,6 +530,9 @@ M._defaults = {
     prompt = "Based on the two reference outputs below, generate a response that incorporates elements from both but reflects your own judgment and unique perspective. Do not provide any explanation, just give the response directly. Reference Output 1: [{{provider1_output}}], Reference Output 2: [{{provider2_output}}]",
     timeout = 60000, -- Timeout in milliseconds
   },
+  experimental = {
+    sidebar_v2 = false, -- Enable the opt-in sidebar v2 with inline file references
+  },
   ---Specify the behaviour of avante.nvim
   ---1. auto_focus_sidebar              : Whether to automatically focus the sidebar when opening avante.nvim. Default to true.
   ---2. auto_suggestions = false, -- Whether to enable auto suggestions. Default to false.
@@ -795,6 +798,7 @@ M._defaults = {
   input = {
     provider = "native",
     provider_opts = {},
+    enable_markdown = false, -- Enable markdown rendering in sidebar_v2 input buffers (requires render-markdown.nvim)
   },
   suggestion = {
     debounce = 600,
@@ -915,6 +919,8 @@ local function apply_model_selection(config, model_name, provider_name)
 end
 
 ---@param opts table<string, any>|nil -- Optional table parameter for configuration settings
+M._options = vim.deepcopy(M._defaults)
+
 function M.setup(opts)
   opts = opts or {} -- Ensure `opts` is defined with a default table
   if vim.fn.has("nvim-0.11") == 1 then

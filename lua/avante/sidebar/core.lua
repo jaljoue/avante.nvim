@@ -22,6 +22,10 @@ local Line = require("avante.ui.line")
 local LRUCache = require("avante.utils.lru_cache")
 local logo = require("avante.utils.logo")
 local ButtonGroupLine = require("avante.ui.button_group_line")
+local Input = require("avante.sidebar.input")
+local Layout = require("avante.sidebar.layout")
+local SelectedCode = require("avante.sidebar.components.selected_code")
+local Todos = require("avante.sidebar.components.todos")
 
 local RESULT_BUF_NAME = "AVANTE_RESULT"
 local VIEW_BUFFER_UPDATED_PATTERN = "AvanteViewBufferUpdated"
@@ -40,7 +44,7 @@ local RESP_SEPARATOR = "-------"
 
 ---This is a list of known sidebar containers or sub-windows. They are listed in
 ---the order they appear in the sidebar, from top to bottom.
-local SIDEBAR_CONTAINERS = {
+local DEFAULT_SIDEBAR_CONTAINERS = {
   "result",
   "selected_code",
   "selected_files",
@@ -65,6 +69,7 @@ Sidebar.__index = Sidebar
 ---@field code avante.CodeState
 ---@field containers { result?: NuiSplit, todos?: NuiSplit, selected_code?: NuiSplit, selected_files?: NuiSplit, input?: NuiSplit }
 ---@field file_selector FileSelector
+---@field file_context table
 ---@field chat_history avante.ChatHistory | nil
 ---@field current_state avante.GenerateState | nil
 ---@field state_timer table | nil
@@ -89,7 +94,7 @@ Sidebar.__index = Sidebar
 
 ---@param id integer the tabpage id retrieved from api.nvim_get_current_tabpage()
 function Sidebar:new(id)
-  return setmetatable({
+  local instance = setmetatable({
     id = id,
     code = { bufnr = 0, winid = 0, selection = nil, old_winhl = nil },
     winids = {
@@ -122,7 +127,14 @@ function Sidebar:new(id)
     current_tool_use_extmark_id = nil,
     win_width_store = {},
     is_in_full_view = false,
-  }, Sidebar)
+    selected_files_hint_ns = SELECTED_FILES_HINT_NAMESPACE,
+    selected_files_icon_ns = SELECTED_FILES_ICON_NAMESPACE,
+    priority = PRIORITY,
+  }, self)
+
+  if self.file_context and self.file_context.setup_state then self.file_context:setup_state(instance, id) end
+
+  return instance
 end
 
 function Sidebar:delete_autocmds()
@@ -150,6 +162,7 @@ function Sidebar:reset()
 
   -- clean up file selector events
   if self.file_selector then self.file_selector:off("update") end
+  if self.file_context and self.file_context.cleanup then self.file_context:cleanup(self) end
 
   self:delete_containers()
 
@@ -303,6 +316,65 @@ function Sidebar:focus_input()
 end
 
 function Sidebar:is_open() return Utils.is_valid_container(self.containers.result, true) end
+
+function Sidebar:get_container_order()
+  local file_context = self.file_context
+  return file_context and file_context.container_order or DEFAULT_SIDEBAR_CONTAINERS
+end
+
+function Sidebar:get_selected_filepaths(request)
+  if not self.file_context then return {} end
+  return self.file_context:get_selected_filepaths(self, request)
+end
+
+function Sidebar:get_selected_files_contents(request)
+  local contents = {}
+  for _, filepath in ipairs(self:get_selected_filepaths(request)) do
+    local lines, error = Utils.read_file_from_buf_or_disk(filepath)
+    lines = lines or {}
+    local filetype = Utils.get_filetype(filepath)
+    if error ~= nil then
+      Utils.error("error reading file: " .. error)
+    else
+      table.insert(contents, {
+        path = filepath,
+        content = table.concat(lines, "\n"),
+        file_type = filetype,
+      })
+    end
+  end
+  return contents
+end
+
+function Sidebar:get_selected_filepaths_mode()
+  if not self.file_context then return "preload_contents" end
+  return self.file_context:get_selected_filepaths_mode()
+end
+
+function Sidebar:add_selected_file(filepath)
+  if not self.file_context then return end
+  return self.file_context:add_file(self, filepath)
+end
+
+function Sidebar:remove_selected_file(filepath)
+  if not self.file_context then return end
+  return self.file_context:remove_file(self, filepath)
+end
+
+function Sidebar:add_current_buffer_file()
+  if not self.file_context then return false end
+  return self.file_context:add_current_buffer(self)
+end
+
+function Sidebar:add_buffer_files()
+  if not self.file_context then return end
+  return self.file_context:add_buffer_files(self)
+end
+
+function Sidebar:add_quickfix_files()
+  if not self.file_context then return end
+  return self.file_context:add_quickfix_files(self)
+end
 
 function Sidebar:in_code_win() return self.code.winid == api.nvim_get_current_win() end
 
@@ -966,33 +1038,8 @@ function Sidebar:apply(current_cursor)
   end, 10)
 end
 
-local buf_options = {
-  modifiable = false,
-  swapfile = false,
-  buftype = "nofile",
-}
-
-local base_win_options = {
-  winfixbuf = true,
-  spell = false,
-  signcolumn = "no",
-  foldcolumn = "0",
-  number = false,
-  relativenumber = false,
-  winfixwidth = true,
-  list = false,
-  linebreak = true,
-  breakindent = true,
-  wrap = false,
-  cursorline = false,
-  fillchars = "eob: ",
-  winhighlight = "CursorLine:Normal,CursorColumn:Normal,WinSeparator:"
-    .. Highlights.AVANTE_SIDEBAR_WIN_SEPARATOR
-    .. ",Normal:"
-    .. Highlights.AVANTE_SIDEBAR_NORMAL,
-  winbar = "",
-  statusline = vim.o.laststatus == 0 and " " or "",
-}
+local buf_options = require("avante.sidebar.win").get_buf_options()
+local base_win_options = require("avante.sidebar.win").get_base_win_options()
 
 function Sidebar:render_header(winid, bufnr, header_text, hl, reverse_hl, opts)
   opts = vim.tbl_extend("force", { include_model = false }, opts or {})
@@ -1345,13 +1392,13 @@ function Sidebar:on_mount(opts)
   -- Add keymap to add current buffer while sidebar is open
   if Config.behaviour.auto_set_keymaps and Config.mappings.files and Config.mappings.files.add_current then
     vim.keymap.set("n", Config.mappings.files.add_current, function()
-      if self:is_open() and self.file_selector:add_current_buffer() then
-        vim.notify("Added current buffer to file selector", vim.log.levels.DEBUG, { title = "Avante" })
+      if self:is_open() and self:add_current_buffer_file() then
+        vim.notify("Added current buffer to chat context", vim.log.levels.DEBUG, { title = "Avante" })
       else
         vim.notify("Failed to add current buffer", vim.log.levels.WARN, { title = "Avante" })
       end
     end, {
-      desc = "avante: add current buffer to file selector",
+      desc = "avante: add current buffer to chat context",
       noremap = true,
       silent = true,
     })
@@ -1539,92 +1586,6 @@ function Sidebar:on_mount(opts)
   end
 end
 
---- Given a desired container name, returns the window ID of the first valid container
---- situated above it in the sidebar's order.
---- @param container_name string The name of the container to start searching from.
---- @return integer|nil The window ID of the previous valid container, or nil.
-function Sidebar:get_split_candidate(container_name)
-  local start_index = 0
-  for i, name in ipairs(SIDEBAR_CONTAINERS) do
-    if name == container_name then
-      start_index = i
-      break
-    end
-  end
-
-  if start_index > 1 then
-    for i = start_index - 1, 1, -1 do
-      local container = self.containers[SIDEBAR_CONTAINERS[i]]
-      if Utils.is_valid_container(container, true) then return container.winid end
-    end
-  end
-  return nil
-end
-
----Cycles focus over sidebar components.
----@param direction "next" | "previous"
-function Sidebar:switch_window_focus(direction)
-  local current_winid = vim.api.nvim_get_current_win()
-  local current_index = nil
-  local ordered_winids = {}
-
-  for _, name in ipairs(SIDEBAR_CONTAINERS) do
-    local container = self.containers[name]
-    if container and container.winid then
-      table.insert(ordered_winids, container.winid)
-      if container.winid == current_winid then current_index = #ordered_winids end
-    end
-  end
-
-  if current_index and #ordered_winids > 1 then
-    local next_index
-    if direction == "next" then
-      next_index = (current_index % #ordered_winids) + 1
-    elseif direction == "previous" then
-      next_index = current_index - 1
-      if next_index < 1 then next_index = #ordered_winids end
-    else
-      error("Invalid 'direction' parameter: " .. direction)
-    end
-
-    vim.api.nvim_set_current_win(ordered_winids[next_index])
-  end
-end
-
----Sets up focus switching shortcuts for a sidebar component
----@param container NuiSplit
-function Sidebar:setup_window_navigation(container)
-  local buf = api.nvim_win_get_buf(container.winid)
-  Utils.safe_keymap_set(
-    { "n", "i" },
-    Config.mappings.sidebar.switch_windows,
-    function() self:switch_window_focus("next") end,
-    { buffer = buf, noremap = true, silent = true, nowait = true }
-  )
-  Utils.safe_keymap_set(
-    { "n", "i" },
-    Config.mappings.sidebar.reverse_switch_windows,
-    function() self:switch_window_focus("previous") end,
-    { buffer = buf, noremap = true, silent = true, nowait = true }
-  )
-end
-
-function Sidebar:resize()
-  for _, container in pairs(self.containers) do
-    if container.winid and api.nvim_win_is_valid(container.winid) then
-      if self.is_in_full_view then
-        api.nvim_win_set_width(container.winid, vim.o.columns - 1)
-      else
-        api.nvim_win_set_width(container.winid, Config.get_window_width())
-      end
-    end
-  end
-  self:render_result()
-  self:render_input()
-  self:render_selected_code()
-  vim.defer_fn(function() vim.cmd("AvanteRefresh") end, 200)
-end
-
 function Sidebar:render_logo()
   local logo_lines = vim.split(logo, "\n")
   local max_width = 30
@@ -1704,18 +1665,7 @@ function Sidebar:initialize()
   local buf_ft = api.nvim_get_option_value("filetype", { buf = self.code.bufnr })
   if vim.list_contains(Config.selector.exclude_auto_select, buf_ft) then return self end
 
-  self.file_selector:reset()
-
-  -- Only auto-add current file if configured to do so
-  if Config.behaviour.auto_add_current_file then
-    local buf_path = api.nvim_buf_get_name(self.code.bufnr)
-    -- if the filepath is outside of the current working directory then we want the absolute path
-    local filepath = Utils.file.is_in_project(buf_path) and Utils.relative_path(buf_path) or buf_path
-    Utils.debug("Sidebar:initialize adding buffer to file selector", buf_path)
-
-    local stat = vim.uv.fs_stat(filepath)
-    if stat == nil or stat.type == "file" then self.file_selector:add_selected_file(filepath) end
-  end
+  if self.file_context and self.file_context.initialize then self.file_context:initialize(self) end
 
   self:reload_chat_history()
 
@@ -1897,10 +1847,6 @@ local function calculate_config_window_position()
 
   ---@cast position -"smart", -string
   return position
-end
-
-function Sidebar:get_layout()
-  return vim.tbl_contains({ "left", "right" }, calculate_config_window_position()) and "vertical" or "horizontal"
 end
 
 ---@param ctx table
@@ -2239,8 +2185,8 @@ You are a responsible senior development engineer, and you are about to leave yo
 - If there is no AGENTS.md file in the project root directory, create a new AGENTS.md file and write the new content in it.]]
   self:new_chat(args, cb)
   self.code.selection = nil
+  if self.file_context and self.file_context.cleanup then self.file_context:cleanup(self) end
   self.file_selector:reset()
-  if self.containers.selected_files then self.containers.selected_files:unmount() end
   vim.api.nvim_exec_autocmds("User", { pattern = "AvanteInputSubmitted", data = { request = user_input } })
 end
 
@@ -2394,120 +2340,12 @@ function Sidebar:add_chat_history(messages, options)
   self:add_history_messages(history_messages)
 end
 
-function Sidebar:create_selected_code_container()
-  if self.containers.selected_code ~= nil then
-    self.containers.selected_code:unmount()
-    self.containers.selected_code = nil
-  end
-
-  local height = self:get_selected_code_container_height()
-
-  if self.code.selection ~= nil then
-    self.containers.selected_code = Split({
-      enter = false,
-      relative = {
-        type = "win",
-        winid = self:get_split_candidate("selected_code"),
-      },
-      buf_options = vim.tbl_deep_extend("force", buf_options, { filetype = "AvanteSelectedCode" }),
-      win_options = vim.tbl_deep_extend("force", base_win_options, {}),
-      size = {
-        height = height,
-      },
-      position = "bottom",
-    })
-    self.containers.selected_code:mount()
-    self:adjust_layout()
-    self:setup_window_navigation(self.containers.selected_code)
-  end
-end
-
-function Sidebar:close_input_hint()
-  if self.input_hint_window and api.nvim_win_is_valid(self.input_hint_window) then
-    local buf = api.nvim_win_get_buf(self.input_hint_window)
-    if INPUT_HINT_NAMESPACE then api.nvim_buf_clear_namespace(buf, INPUT_HINT_NAMESPACE, 0, -1) end
-    api.nvim_win_close(self.input_hint_window, true)
-    api.nvim_buf_delete(buf, { force = true })
-    self.input_hint_window = nil
-  end
-end
-
-function Sidebar:get_input_float_window_row()
-  local win_height = api.nvim_win_get_height(self.containers.input.winid)
-  local winline = Utils.winline(self.containers.input.winid)
-  if winline >= win_height - 1 then return 0 end
-  return winline
-end
-
--- Create a floating window as a hint
-function Sidebar:show_input_hint()
-  self:close_input_hint() -- Close the existing hint window
-
-  local hint_text = (fn.mode() ~= "i" and Config.mappings.submit.normal or Config.mappings.submit.insert) .. ": submit"
-  if Config.behaviour.enable_token_counting then
-    local input_value = table.concat(api.nvim_buf_get_lines(self.containers.input.bufnr, 0, -1, false), "\n")
-    if self.token_count == nil then self:initialize_token_count() end
-    local tokens = self.token_count + Utils.tokens.calculate_tokens(input_value)
-    hint_text = "Tokens: " .. tostring(tokens) .. "; " .. hint_text
-  end
-
-  local buf = api.nvim_create_buf(false, true)
-  api.nvim_buf_set_lines(buf, 0, -1, false, { hint_text })
-  api.nvim_buf_set_extmark(buf, INPUT_HINT_NAMESPACE, 0, 0, { hl_group = "AvantePopupHint", end_col = #hint_text })
-
-  -- Get the current window size
-  local win_width = api.nvim_win_get_width(self.containers.input.winid)
-  local width = #hint_text
-
-  -- Create the floating window
-  self.input_hint_window = api.nvim_open_win(buf, false, {
-    relative = "win",
-    win = self.containers.input.winid,
-    width = width,
-    height = 1,
-    row = self:get_input_float_window_row(),
-    col = math.max(win_width - width, 0), -- Display in the bottom right corner
-    style = "minimal",
-    border = "none",
-    focusable = false,
-    zindex = 100,
-  })
-end
-
 function Sidebar:close_selected_files_hint()
-  if self.containers.selected_files and api.nvim_win_is_valid(self.containers.selected_files.winid) then
-    pcall(api.nvim_buf_clear_namespace, self.containers.selected_files.bufnr, SELECTED_FILES_HINT_NAMESPACE, 0, -1)
-  end
+  if self.file_context and self.file_context.close_hint then self.file_context:close_hint(self) end
 end
 
 function Sidebar:show_selected_files_hint()
-  self:close_selected_files_hint()
-
-  local cursor_pos = api.nvim_win_get_cursor(self.containers.selected_files.winid)
-  local line_number = cursor_pos[1]
-  local col_number = cursor_pos[2]
-
-  local selected_filepaths_ = self.file_selector:get_selected_filepaths()
-  local hint
-  if #selected_filepaths_ == 0 then
-    hint = string.format(" [%s: add] ", Config.mappings.sidebar.add_file)
-  else
-    hint =
-      string.format(" [%s: delete, %s: add] ", Config.mappings.sidebar.remove_file, Config.mappings.sidebar.add_file)
-  end
-
-  api.nvim_buf_set_extmark(
-    self.containers.selected_files.bufnr,
-    SELECTED_FILES_HINT_NAMESPACE,
-    line_number - 1,
-    col_number,
-    {
-      virt_text = { { hint, "AvanteInlineHint" } },
-      virt_text_pos = "right_align",
-      hl_group = "AvanteInlineHint",
-      priority = PRIORITY,
-    }
-  )
+  if self.file_context and self.file_context.show_hint then self.file_context:show_hint(self) end
 end
 
 function Sidebar:reload_chat_history()
@@ -2572,8 +2410,15 @@ function Sidebar:get_history_messages_for_api(opts)
 end
 
 ---@param request string
+---@param opts? { selected_filepaths?: string[], selected_filepaths_mode?: "preload_contents" | "links_only" } | fun(opts: AvanteGeneratePromptsOptions): nil
 ---@param cb? fun(opts: AvanteGeneratePromptsOptions): nil
-function Sidebar:get_generate_prompts_options(request, cb)
+function Sidebar:get_generate_prompts_options(request, opts, cb)
+  if type(opts) == "function" then
+    cb = opts
+    opts = {}
+  end
+  opts = opts or {}
+
   local filetype = api.nvim_get_option_value("filetype", { buf = self.code.bufnr })
   local file_ext = nil
 
@@ -2613,7 +2458,7 @@ function Sidebar:get_generate_prompts_options(request, cb)
     description = "Add a file to the context",
     ---@type AvanteLLMToolFunc<{ rel_path: string }>
     func = function(input)
-      self.file_selector:add_selected_file(input.rel_path)
+      self:add_selected_file(input.rel_path)
       return "Added file to context", nil
     end,
     param = {
@@ -2628,7 +2473,7 @@ function Sidebar:get_generate_prompts_options(request, cb)
     description = "Remove a file from the context",
     ---@type AvanteLLMToolFunc<{ rel_path: string }>
     func = function(input)
-      self.file_selector:remove_selected_file(input.rel_path)
+      self:remove_selected_file(input.rel_path)
       return "Removed file from context", nil
     end,
     param = {
@@ -2638,7 +2483,8 @@ function Sidebar:get_generate_prompts_options(request, cb)
     returns = {},
   })
 
-  local selected_filepaths = self.file_selector.selected_filepaths or {}
+  local selected_filepaths = opts.selected_filepaths or self:get_selected_filepaths()
+  local selected_filepaths_mode = opts.selected_filepaths_mode or self:get_selected_filepaths_mode()
 
   local ask = Config.ask_opts.ask
   if ask == nil then ask = true end
@@ -2648,6 +2494,7 @@ function Sidebar:get_generate_prompts_options(request, cb)
     ask = ask,
     project_context = vim.json.encode(project_context),
     selected_filepaths = selected_filepaths,
+    selected_filepaths_mode = selected_filepaths_mode,
     recently_viewed_files = Utils.get_recent_filepaths(),
     diagnostics = vim.json.encode(diagnostics),
     history_messages = history_messages,
@@ -2731,7 +2578,8 @@ function Sidebar:handle_submit(request)
   local new_content, has_shortcuts = Utils.extract_shortcuts(request)
   if has_shortcuts then request = new_content end
 
-  local selected_filepaths = self.file_selector:get_selected_filepaths()
+  local selected_filepaths = self:get_selected_filepaths(request)
+  local selected_filepaths_mode = self:get_selected_filepaths_mode()
 
   ---@type AvanteSelectedCode | nil
   local selected_code = self.code.selection
@@ -2871,7 +2719,10 @@ function Sidebar:handle_submit(request)
     })
   end
 
-  self:get_generate_prompts_options(request, function(generate_prompts_options)
+  self:get_generate_prompts_options(request, {
+    selected_filepaths = selected_filepaths,
+    selected_filepaths_mode = selected_filepaths_mode,
+  }, function(generate_prompts_options)
     ---@type AvanteLLMStreamOptions
     ---@diagnostic disable-next-line: assign-type-mismatch
     local stream_options = vim.tbl_deep_extend("force", generate_prompts_options, {
@@ -2930,250 +2781,6 @@ function Sidebar:handle_submit(request)
     if request ~= "" then on_state_change("generating") end
     Llm.stream(stream_options)
   end)
-end
-
-function Sidebar:initialize_token_count()
-  if Config.behaviour.enable_token_counting then self:get_generate_prompts_options("") end
-end
-
-function Sidebar:create_input_container()
-  if self.containers.input then self.containers.input:unmount() end
-
-  if not self.code.bufnr or not api.nvim_buf_is_valid(self.code.bufnr) then return end
-
-  if self.chat_history == nil then self:reload_chat_history() end
-
-  local function get_position()
-    if self:get_layout() == "vertical" then return "bottom" end
-    return "right"
-  end
-
-  local function get_size()
-    if self:get_layout() == "vertical" then return {
-      height = Config.windows.input.height,
-    } end
-
-    local selected_code_container_height = self:get_selected_code_container_height()
-
-    return {
-      width = "40%",
-      height = math.max(1, api.nvim_win_get_height(self.containers.result.winid) - selected_code_container_height),
-    }
-  end
-
-  self.containers.input = Split({
-    enter = false,
-    relative = {
-      type = "win",
-      winid = self.containers.result.winid,
-    },
-    buf_options = {
-      swapfile = false,
-      buftype = "nofile",
-    },
-    win_options = vim.tbl_deep_extend("force", base_win_options, { signcolumn = "yes", wrap = Config.windows.wrap }),
-    position = get_position(),
-    size = get_size(),
-  })
-
-  local function on_submit() self:submit_input() end
-
-  self.containers.input:mount()
-  PromptLogger.init()
-
-  local function place_sign_at_first_line(bufnr)
-    local group = "avante_input_prompt_group"
-
-    fn.sign_unplace(group, { buffer = bufnr })
-    fn.sign_place(0, group, "AvanteInputPromptSign", bufnr, { lnum = 1 })
-  end
-
-  place_sign_at_first_line(self.containers.input.bufnr)
-
-  if Utils.in_visual_mode() then
-    -- Exit visual mode. Unfortunately there is no appropriate command
-    -- so we have to simulate keystrokes.
-    local esc_key = api.nvim_replace_termcodes("<Esc>", true, false, true)
-    vim.api.nvim_feedkeys(esc_key, "n", false)
-  end
-
-  self:setup_window_navigation(self.containers.input)
-  self.containers.input:map("n", Config.mappings.submit.normal, on_submit)
-  self.containers.input:map("i", Config.mappings.submit.insert, on_submit)
-  if Config.prompt_logger.next_prompt.normal then
-    self.containers.input:map("n", Config.prompt_logger.next_prompt.normal, PromptLogger.on_log_retrieve(-1))
-  end
-  if Config.prompt_logger.next_prompt.insert then
-    self.containers.input:map("i", Config.prompt_logger.next_prompt.insert, PromptLogger.on_log_retrieve(-1))
-  end
-  if Config.prompt_logger.prev_prompt.normal then
-    self.containers.input:map("n", Config.prompt_logger.prev_prompt.normal, PromptLogger.on_log_retrieve(1))
-  end
-  if Config.prompt_logger.prev_prompt.insert then
-    self.containers.input:map("i", Config.prompt_logger.prev_prompt.insert, PromptLogger.on_log_retrieve(1))
-  end
-
-  if Config.mappings.sidebar.close_from_input ~= nil then
-    if Config.mappings.sidebar.close_from_input.normal ~= nil then
-      self.containers.input:map("n", Config.mappings.sidebar.close_from_input.normal, function() self:shutdown() end)
-    end
-    if Config.mappings.sidebar.close_from_input.insert ~= nil then
-      self.containers.input:map("i", Config.mappings.sidebar.close_from_input.insert, function() self:shutdown() end)
-    end
-  end
-
-  if Config.mappings.sidebar.toggle_code_window_from_input ~= nil then
-    if Config.mappings.sidebar.toggle_code_window_from_input.normal ~= nil then
-      self.containers.input:map(
-        "n",
-        Config.mappings.sidebar.toggle_code_window_from_input.normal,
-        function() self:toggle_code_window() end
-      )
-    end
-    if Config.mappings.sidebar.toggle_code_window_from_input.insert ~= nil then
-      self.containers.input:map(
-        "i",
-        Config.mappings.sidebar.toggle_code_window_from_input.insert,
-        function() self:toggle_code_window() end
-      )
-    end
-  end
-
-  api.nvim_set_option_value("filetype", "AvanteInput", { buf = self.containers.input.bufnr })
-
-  -- Setup completion
-  api.nvim_create_autocmd("InsertEnter", {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    once = true,
-    desc = "Setup the completion of helpers in the input buffer",
-    callback = function() end,
-  })
-
-  local debounced_show_input_hint = Utils.debounce(function()
-    if vim.api.nvim_win_is_valid(self.containers.input.winid) then self:show_input_hint() end
-  end, 200)
-  api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "VimResized" }, {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    callback = function()
-      debounced_show_input_hint()
-      place_sign_at_first_line(self.containers.input.bufnr)
-    end,
-  })
-
-  api.nvim_create_autocmd("QuitPre", {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    callback = function() self:close_input_hint() end,
-  })
-
-  api.nvim_create_autocmd("WinClosed", {
-    group = self.augroup,
-    pattern = tostring(self.containers.input.winid),
-    callback = function() self:close_input_hint() end,
-  })
-
-  api.nvim_create_autocmd("BufEnter", {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    callback = function()
-      if Config.windows.ask.start_insert then vim.cmd("noautocmd startinsert!") end
-    end,
-  })
-
-  api.nvim_create_autocmd("BufLeave", {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    callback = function()
-      vim.cmd("noautocmd stopinsert")
-      self:close_input_hint()
-    end,
-  })
-
-  -- Update hint on mode change as submit key sequence may be different
-  api.nvim_create_autocmd("ModeChanged", {
-    group = self.augroup,
-    buffer = self.containers.input.bufnr,
-    callback = function() self:show_input_hint() end,
-  })
-
-  api.nvim_create_autocmd("WinEnter", {
-    group = self.augroup,
-    callback = function()
-      local cur_win = api.nvim_get_current_win()
-      if self.containers.input and cur_win == self.containers.input.winid then
-        self:show_input_hint()
-      else
-        self:close_input_hint()
-      end
-    end,
-  })
-end
-
--- FIXME: this is used by external plugin users
----@param value string
-function Sidebar:set_input_value(value)
-  if not self.containers.input then return end
-  if not value then return end
-  api.nvim_buf_set_lines(self.containers.input.bufnr, 0, -1, false, vim.split(value, "\n"))
-end
-
----@return string
-function Sidebar:get_input_value()
-  if not self.containers.input then return "" end
-  local lines = api.nvim_buf_get_lines(self.containers.input.bufnr, 0, -1, false)
-  return table.concat(lines, "\n")
-end
-
-function Sidebar:get_selected_code_container_height()
-  if not self.code.selection then return 0 end
-
-  local max_height = 5
-
-  local count = Utils.count_lines(self.code.selection.content)
-  if Config.windows.sidebar_header.enabled then count = count + 1 end
-
-  return math.min(count, max_height)
-end
-
-function Sidebar:get_todos_container_height()
-  local history = Path.history.load(self.code.bufnr)
-  if #history.todos == 0 then return 0 end
-  return 3
-end
-
-function Sidebar:get_result_container_height()
-  local todos_container_height = self:get_todos_container_height()
-  local selected_code_container_height = self:get_selected_code_container_height()
-  local selected_files_container_height = self:get_selected_files_container_height()
-
-  if self:get_layout() == "horizontal" then return math.floor(Config.windows.height / 100 * vim.o.lines) end
-
-  return math.max(
-    1,
-    api.nvim_get_option_value("lines", {})
-      - selected_files_container_height
-      - selected_code_container_height
-      - todos_container_height
-      - Config.windows.input.height
-  )
-end
-
-function Sidebar:get_result_container_width()
-  if self:get_layout() == "vertical" then return math.floor(Config.windows.width / 100 * vim.o.columns) end
-
-  return math.max(1, api.nvim_win_get_width(self.code.winid))
-end
-
-function Sidebar:adjust_result_container_layout()
-  local width = self:get_result_container_width()
-  local height = self:get_result_container_height()
-
-  if self.is_in_full_view then width = vim.o.columns - 1 end
-
-  api.nvim_win_set_width(self.containers.result.winid, width)
-  api.nvim_win_set_height(self.containers.result.winid, height)
 end
 
 ---@param opts AskOptions
@@ -3281,249 +2888,34 @@ function Sidebar:render(opts)
   return self
 end
 
-function Sidebar:get_selected_files_container_height()
-  local selected_filepaths_ = self.file_selector:get_selected_filepaths()
-  return math.min(Config.windows.selected_files.height, #selected_filepaths_ + 1)
-end
-
-function Sidebar:adjust_selected_files_container_layout()
-  if not Utils.is_valid_container(self.containers.selected_files, true) then return end
-
-  local win_height = self:get_selected_files_container_height()
-  api.nvim_win_set_height(self.containers.selected_files.winid, win_height)
-end
-
-function Sidebar:adjust_selected_code_container_layout()
-  if not Utils.is_valid_container(self.containers.selected_code, true) then return end
-
-  local win_height = self:get_selected_code_container_height()
-  api.nvim_win_set_height(self.containers.selected_code.winid, win_height)
-end
-
-function Sidebar:adjust_todos_container_layout()
-  if not Utils.is_valid_container(self.containers.todos, true) then return end
-
-  local win_height = self:get_todos_container_height()
-  api.nvim_win_set_height(self.containers.todos.winid, win_height)
-end
-
 function Sidebar:create_selected_files_container()
-  if self.containers.selected_files then self.containers.selected_files:unmount() end
-
-  local selected_filepaths = self.file_selector:get_selected_filepaths()
-  if #selected_filepaths == 0 then
-    self.file_selector:off("update")
-    self.file_selector:on("update", function() self:create_selected_files_container() end)
-    return
-  end
-
-  self.containers.selected_files = Split({
-    enter = false,
-    relative = {
-      type = "win",
-      winid = self:get_split_candidate("selected_files"),
-    },
-    buf_options = vim.tbl_deep_extend("force", buf_options, {
-      modifiable = false,
-      swapfile = false,
-      buftype = "nofile",
-      bufhidden = "wipe",
-      filetype = "AvanteSelectedFiles",
-    }),
-    win_options = vim.tbl_deep_extend("force", base_win_options, {
-      fillchars = Config.windows.fillchars,
-    }),
-    position = "bottom",
-    size = {
-      height = 2,
-    },
+  if not self.file_context or not self.file_context.create_container then return end
+  self.file_context:create_container(self, {
+    buf_options = buf_options,
+    base_win_options = base_win_options,
   })
-  self.containers.selected_files:mount()
-
-  local function render()
-    local selected_filepaths_ = self.file_selector:get_selected_filepaths()
-    if #selected_filepaths_ == 0 then
-      if Utils.is_valid_container(self.containers.selected_files) then self.containers.selected_files:unmount() end
-      return
-    end
-
-    if not Utils.is_valid_container(self.containers.selected_files, true) then
-      self:create_selected_files_container()
-      if not Utils.is_valid_container(self.containers.selected_files, true) then
-        Utils.warn("Failed to create or find selected files container window.")
-        return
-      end
-    end
-
-    local lines_to_set = {}
-    local highlights_to_apply = {}
-
-    local project_path = Utils.root.get()
-    for i, filepath in ipairs(selected_filepaths_) do
-      local icon, hl = Utils.file.get_file_icon(filepath)
-      local renderpath = PPath:new(filepath):normalize(project_path)
-      local formatted_line = string.format("%s %s", icon, renderpath)
-      table.insert(lines_to_set, formatted_line)
-      if hl and hl ~= "" then table.insert(highlights_to_apply, { line_nr = i, icon = icon, hl = hl }) end
-    end
-
-    local selected_files_count = #lines_to_set ---@type integer
-    local selected_files_buf = api.nvim_win_get_buf(self.containers.selected_files.winid)
-    Utils.unlock_buf(selected_files_buf)
-    api.nvim_buf_clear_namespace(selected_files_buf, SELECTED_FILES_ICON_NAMESPACE, 0, -1)
-    api.nvim_buf_set_lines(selected_files_buf, 0, -1, true, lines_to_set)
-
-    for _, highlight_info in ipairs(highlights_to_apply) do
-      local line_idx = highlight_info.line_nr - 1
-      local icon_bytes = #highlight_info.icon
-      pcall(api.nvim_buf_set_extmark, selected_files_buf, SELECTED_FILES_ICON_NAMESPACE, line_idx, 0, {
-        end_col = icon_bytes,
-        hl_group = highlight_info.hl,
-        priority = PRIORITY,
-      })
-    end
-
-    Utils.lock_buf(selected_files_buf)
-    local win_height = self:get_selected_files_container_height()
-    api.nvim_win_set_height(self.containers.selected_files.winid, win_height)
-    self:render_header(
-      self.containers.selected_files.winid,
-      selected_files_buf,
-      string.format(
-        "%sSelected (%d file%s)",
-        Utils.icon(" "),
-        selected_files_count,
-        selected_files_count > 1 and "s" or ""
-      ),
-      Highlights.SUBTITLE,
-      Highlights.REVERSED_SUBTITLE
-    )
-    self:adjust_layout()
-  end
-
-  self.file_selector:on("update", render)
-
-  local function remove_file(line_number) self.file_selector:remove_selected_filepaths_with_index(line_number) end
-
-  -- Set up keybinding to remove files
-  self.containers.selected_files:map("n", Config.mappings.sidebar.remove_file, function()
-    local line_number = api.nvim_win_get_cursor(self.containers.selected_files.winid)[1]
-    remove_file(line_number)
-  end, { noremap = true, silent = true })
-
-  self.containers.selected_files:map("x", Config.mappings.sidebar.remove_file, function()
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
-    local start_line = math.min(vim.fn.line("v"), vim.fn.line("."))
-    local end_line = math.max(vim.fn.line("v"), vim.fn.line("."))
-    for _ = start_line, end_line do
-      remove_file(start_line)
-    end
-  end, { noremap = true, silent = true })
-
-  self.containers.selected_files:map(
-    "n",
-    Config.mappings.sidebar.add_file,
-    function() self.file_selector:open() end,
-    { noremap = true, silent = true }
-  )
-
-  -- Set up autocmd to show hint on cursor move
-  self.containers.selected_files:on({ event.CursorMoved }, function() self:show_selected_files_hint() end, {})
-
-  -- Clear hint when leaving the window
-  self.containers.selected_files:on(event.BufLeave, function() self:close_selected_files_hint() end, {})
-
-  self:setup_window_navigation(self.containers.selected_files)
-
-  render()
 end
 
-function Sidebar:create_todos_container()
-  local history = Path.history.load(self.code.bufnr)
-  if #history.todos == 0 then
-    if self.containers.todos and Utils.is_valid_container(self.containers.todos) then
-      self.containers.todos:unmount()
-    end
-    self.containers.todos = nil
-    self:adjust_layout()
-    return
+local M = {}
+
+local function apply_methods(class, methods)
+  for name, method in pairs(methods) do
+    class[name] = method
   end
-
-  -- Calculate safe height to prevent "Not enough room" error
-  local safe_height = math.min(3, math.max(1, vim.o.lines - 5))
-
-  if not Utils.is_valid_container(self.containers.todos, true) then
-    self.containers.todos = Split({
-      enter = false,
-      relative = {
-        type = "win",
-        winid = self:get_split_candidate("todos"),
-      },
-      buf_options = vim.tbl_deep_extend("force", buf_options, {
-        modifiable = false,
-        swapfile = false,
-        buftype = "nofile",
-        bufhidden = "wipe",
-        filetype = "AvanteTodos",
-      }),
-      win_options = vim.tbl_deep_extend("force", base_win_options, {
-        fillchars = Config.windows.fillchars,
-      }),
-      position = "bottom",
-      size = {
-        height = safe_height,
-      },
-    })
-
-    local ok, err = pcall(function()
-      self.containers.todos:mount()
-      self:setup_window_navigation(self.containers.todos)
-    end)
-    if not ok then
-      Utils.debug("Failed to create todos container:", err)
-      self.containers.todos = nil
-      return
-    end
-  end
-  local done_count = 0
-  local total_count = #history.todos
-  local focused_idx = 1
-  local todos_content_lines = {}
-  for idx, todo in ipairs(history.todos) do
-    local status_content = "[ ]"
-    if todo.status == "done" then
-      done_count = done_count + 1
-      status_content = "[x]"
-    end
-    if todo.status == "doing" then status_content = "[-]" end
-    local line = string.format("%s %d. %s", status_content, idx, todo.content)
-    if todo.status == "cancelled" then line = "~~" .. line .. "~~" end
-    if todo.status ~= "todo" then focused_idx = idx + 1 end
-    table.insert(todos_content_lines, line)
-  end
-  if focused_idx > #todos_content_lines then focused_idx = #todos_content_lines end
-  local todos_buf = api.nvim_win_get_buf(self.containers.todos.winid)
-  Utils.unlock_buf(todos_buf)
-  api.nvim_buf_set_lines(todos_buf, 0, -1, false, todos_content_lines)
-  pcall(function() api.nvim_win_set_cursor(self.containers.todos.winid, { focused_idx, 0 }) end)
-  Utils.lock_buf(todos_buf)
-  self:render_header(
-    self.containers.todos.winid,
-    todos_buf,
-    Utils.icon(" ") .. "Todos" .. " (" .. done_count .. "/" .. total_count .. ")",
-    Highlights.SUBTITLE,
-    Highlights.REVERSED_SUBTITLE
-  )
-
-  local ok, err = pcall(function() self:adjust_layout() end)
-  if not ok then Utils.debug("Failed to adjust layout after todos creation:", err) end
 end
 
-function Sidebar:adjust_layout()
-  self:adjust_result_container_layout()
-  self:adjust_todos_container_layout()
-  self:adjust_selected_code_container_layout()
-  self:adjust_selected_files_container_layout()
+---@param file_context table
+---@return avante.Sidebar
+function M.create(file_context)
+  local class = vim.tbl_extend("keep", {}, Sidebar)
+  class.__index = class
+  class.file_context = file_context
+  class.input_hint_ns = INPUT_HINT_NAMESPACE
+  apply_methods(class, Layout)
+  apply_methods(class, Input)
+  apply_methods(class, SelectedCode)
+  apply_methods(class, Todos)
+  return class
 end
 
-return Sidebar
+return M

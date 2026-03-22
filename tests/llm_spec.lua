@@ -202,4 +202,43 @@ describe("generate_prompts", function()
     assert.are.same(1, instruction_message_count1)
     assert.are.same(1, instruction_message_count2)
   end)
+
+  it("should skip preloading selected_filepaths in links_only mode", function()
+    local original_read = utils.read_file_from_buf_or_disk
+    local calls = 0
+    utils.read_file_from_buf_or_disk = function()
+      calls = calls + 1
+      return { "mock content" }, nil
+    end
+
+    local opts = {
+      _instructions_loaded = true,
+      selected_filepaths = { "/tmp/project_root/lua/mock.lua" },
+      selected_filepaths_mode = "links_only",
+    }
+
+    llm.generate_prompts(opts)
+
+    utils.read_file_from_buf_or_disk = original_read
+    assert.equals(0, calls)
+  end)
+
+  it("should preload selected_filepaths by default", function()
+    local original_read = utils.read_file_from_buf_or_disk
+    local calls = 0
+    utils.read_file_from_buf_or_disk = function()
+      calls = calls + 1
+      return { "mock content" }, nil
+    end
+
+    local opts = {
+      _instructions_loaded = true,
+      selected_filepaths = { "/tmp/project_root/lua/mock.lua" },
+    }
+
+    llm.generate_prompts(opts)
+
+    utils.read_file_from_buf_or_disk = original_read
+    assert.is_true(calls > 0)
+  end)
 end)
