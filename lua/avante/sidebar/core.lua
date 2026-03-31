@@ -1050,16 +1050,17 @@ function Sidebar:render_header(winid, bufnr, header_text, hl, reverse_hl, opts)
 
   local model_name = nil
   if opts.include_model and Config.windows.sidebar_header.include_model then
-    local provider_name = Config.provider
-    if Config.acp_providers[provider_name] then
-      model_name = provider_name
-    else
-      local provider_config = Config.providers[provider_name]
-      if provider_config and provider_config.model then
-        model_name = provider_name .. " | " .. provider_config.model
-      else
-        model_name = provider_name
+    if Config.acp_providers[Config.provider] then
+      local parts = { Config.provider }
+      if self.acp_client and self.acp_client.config_options then
+        for _, opt in ipairs(self.acp_client.config_options) do
+          if opt.category == "model" then table.insert(parts, opt.currentValue) end
+          if opt.category == "mode" then table.insert(parts, opt.currentValue) end
+        end
       end
+      model_name = table.concat(parts, " | ")
+    else
+      model_name = Config.provider .. " | " .. Config.providers[Config.provider].model
     end
   end
 
@@ -1800,11 +1801,13 @@ end
 ---@param selected_filepaths string[]
 ---@param selected_code AvanteSelectedCode?
 ---@return string
-local function render_chat_record_prefix(timestamp, provider, model, request, selected_filepaths, selected_code)
+local function render_chat_record_prefix(timestamp, provider, model, mode, request, selected_filepaths, selected_code)
   local res
   local acp_provider = Config.acp_providers[provider]
   if acp_provider then
     res = "- Datetime: " .. timestamp .. "\n" .. "- ACP:      " .. provider
+    if model and model ~= "" and model ~= "unknown" then res = res .. "\n" .. "- Model:    " .. model end
+    if mode and mode ~= "" and mode ~= "unknown" then res = res .. "\n" .. "- Mode:     " .. mode end
   else
     provider = provider or "unknown"
     model = model or "unknown"
@@ -1865,6 +1868,7 @@ function Sidebar:_get_message_lines(ctx, message, messages, ignore_record_prefix
       message.timestamp,
       message.provider,
       message.model,
+      message.mode,
       text,
       message.selected_filepaths,
       message.selected_code
@@ -2007,6 +2011,7 @@ local function render_message(message, messages, ctx)
       message.timestamp,
       message.provider,
       message.model,
+      message.mode,
       text,
       message.selected_filepaths,
       message.selected_code
@@ -2261,7 +2266,14 @@ function Sidebar:add_history_messages(messages, opts)
   for _, message in ipairs(messages) do
     if message.is_user_submission then
       message.provider = Config.provider
-      if not Config.acp_providers[Config.provider] then
+      if Config.acp_providers[Config.provider] then
+        if self.acp_client and self.acp_client.config_options then
+          for _, opt in ipairs(self.acp_client.config_options) do
+            if opt.category == "model" then message.model = opt.currentValue end
+            if opt.category == "mode" then message.mode = opt.currentValue end
+          end
+        end
+      else
         message.model = Config.get_provider_config(Config.provider).model
       end
     end
