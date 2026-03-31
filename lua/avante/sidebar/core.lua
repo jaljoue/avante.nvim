@@ -1041,6 +1041,28 @@ end
 local buf_options = require("avante.sidebar.win").get_buf_options()
 local base_win_options = require("avante.sidebar.win").get_base_win_options()
 
+local base_win_options = {
+  winfixbuf = true,
+  spell = false,
+  signcolumn = "no",
+  foldcolumn = "0",
+  number = false,
+  relativenumber = false,
+  winfixwidth = true,
+  list = false,
+  linebreak = true,
+  breakindent = true,
+  wrap = false,
+  cursorline = false,
+  fillchars = "eob: ",
+  winhighlight = "CursorLine:Normal,CursorColumn:Normal,WinSeparator:"
+    .. Highlights.AVANTE_SIDEBAR_WIN_SEPARATOR
+    .. ",Normal:"
+    .. Highlights.AVANTE_SIDEBAR_NORMAL,
+  winbar = "",
+  statusline = vim.o.laststatus == 0 and " " or "",
+}
+
 function Sidebar:render_header(winid, bufnr, header_text, hl, reverse_hl, opts)
   opts = vim.tbl_extend("force", { include_model = false }, opts or {})
   if not Config.windows.sidebar_header.enabled then return end
