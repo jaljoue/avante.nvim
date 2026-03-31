@@ -40,6 +40,7 @@ local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
 local lockfile_path = vim.fn.stdpath("data") .. "/avante/openai-timer.lock"
 local chatgpt_model_ids = {
+  "gpt-5.4",
   "gpt-5.3-codex",
   "gpt-5.2-codex",
   "gpt-5.2",
