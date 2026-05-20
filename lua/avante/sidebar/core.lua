@@ -1609,6 +1609,104 @@ function Sidebar:on_mount(opts)
   end
 end
 
+--- Given a desired container name, returns the window ID of the first valid container
+--- situated above it in the sidebar's order.
+--- @param container_name string The name of the container to start searching from.
+--- @return integer|nil The window ID of the previous valid container, or nil.
+function Sidebar:get_split_candidate(container_name)
+  local start_index = 0
+  for i, name in ipairs(SIDEBAR_CONTAINERS) do
+    if name == container_name then
+      start_index = i
+      break
+    end
+  end
+
+  if start_index > 1 then
+    for i = start_index - 1, 1, -1 do
+      local container = self.containers[SIDEBAR_CONTAINERS[i]]
+      if Utils.is_valid_container(container, true) then return container.winid end
+    end
+  end
+  return nil
+end
+
+---Cycles focus over sidebar components.
+---@param direction "next" | "previous"
+function Sidebar:switch_window_focus(direction)
+  local current_winid = vim.api.nvim_get_current_win()
+  local current_index = nil
+  local ordered_winids = {}
+
+  for _, name in ipairs(SIDEBAR_CONTAINERS) do
+    local container = self.containers[name]
+    if container and container.winid then
+      table.insert(ordered_winids, container.winid)
+      if container.winid == current_winid then current_index = #ordered_winids end
+    end
+  end
+
+  if current_index and #ordered_winids > 1 then
+    local next_index
+    if direction == "next" then
+      next_index = (current_index % #ordered_winids) + 1
+    elseif direction == "previous" then
+      next_index = current_index - 1
+      if next_index < 1 then next_index = #ordered_winids end
+    else
+      error("Invalid 'direction' parameter: " .. direction)
+    end
+
+    vim.api.nvim_set_current_win(ordered_winids[next_index])
+  end
+end
+
+---Sets up focus switching shortcuts for a sidebar component
+---@param container NuiSplit
+function Sidebar:setup_window_navigation(container)
+  local buf = api.nvim_win_get_buf(container.winid)
+  vim.keymap.set(
+    { "n", "i" },
+    "<Plug>(AvanteSidebarSwitchWindow)",
+    function() self:switch_window_focus("next") end,
+    { buffer = buf, noremap = true, silent = true, nowait = true }
+  )
+  vim.keymap.set(
+    { "n", "i" },
+    "<Plug>(AvanteSidebarReverseSwitchWindow)",
+    function() self:switch_window_focus("previous") end,
+    { buffer = buf, noremap = true, silent = true, nowait = true }
+  )
+  Utils.safe_keymap_set(
+    { "n", "i" },
+    Config.mappings.sidebar.switch_windows,
+    "<Plug>(AvanteSidebarSwitchWindow)",
+    { buffer = buf, noremap = true, silent = true, nowait = true }
+  )
+  Utils.safe_keymap_set(
+    { "n", "i" },
+    Config.mappings.sidebar.reverse_switch_windows,
+    "<Plug>(AvanteSidebarReverseSwitchWindow)",
+    { buffer = buf, noremap = true, silent = true, nowait = true }
+  )
+end
+
+function Sidebar:resize()
+  for _, container in pairs(self.containers) do
+    if container.winid and api.nvim_win_is_valid(container.winid) then
+      if self.is_in_full_view then
+        api.nvim_win_set_width(container.winid, vim.o.columns - 1)
+      else
+        api.nvim_win_set_width(container.winid, Config.get_window_width())
+      end
+    end
+  end
+  self:render_result()
+  self:render_input()
+  self:render_selected_code()
+  vim.defer_fn(function() vim.cmd("AvanteRefresh") end, 200)
+end
+
 function Sidebar:render_logo()
   local logo_lines = vim.split(logo, "\n")
   local max_width = 30
@@ -2372,6 +2470,86 @@ function Sidebar:add_chat_history(messages, options)
     end
   end
   self:add_history_messages(history_messages)
+end
+
+function Sidebar:create_selected_code_container()
+  if self.containers.selected_code ~= nil then
+    self.containers.selected_code:unmount()
+    self.containers.selected_code = nil
+  end
+
+  local height = self:get_selected_code_container_height()
+
+  if self.code.selection ~= nil then
+    self.containers.selected_code = Split({
+      enter = false,
+      relative = {
+        type = "win",
+        winid = self:get_split_candidate("selected_code"),
+      },
+      buf_options = vim.tbl_deep_extend("force", buf_options, { filetype = "AvanteSelectedCode" }),
+      win_options = vim.tbl_deep_extend("force", base_win_options, {}),
+      size = {
+        height = height,
+      },
+      position = "bottom",
+    })
+    self.containers.selected_code:mount()
+    self:adjust_layout()
+    self:setup_window_navigation(self.containers.selected_code)
+  end
+end
+
+function Sidebar:close_input_hint()
+  if self.input_hint_window and api.nvim_win_is_valid(self.input_hint_window) then
+    local buf = api.nvim_win_get_buf(self.input_hint_window)
+    api.nvim_buf_clear_namespace(buf, INPUT_HINT_NAMESPACE, 0, -1)
+    api.nvim_win_close(self.input_hint_window, true)
+    api.nvim_buf_delete(buf, { force = true })
+    self.input_hint_window = nil
+  end
+end
+
+function Sidebar:get_input_float_window_row()
+  local win_height = api.nvim_win_get_height(self.containers.input.winid)
+  local winline = Utils.winline(self.containers.input.winid)
+  if winline >= win_height - 1 then return 0 end
+  return winline
+end
+
+-- Create a floating window as a hint
+function Sidebar:show_input_hint()
+  self:close_input_hint() -- Close the existing hint window
+
+  local hint_text = (fn.mode() ~= "i" and Config.mappings.submit.normal or Config.mappings.submit.insert) .. ": submit"
+  if Config.behaviour.enable_token_counting then
+    local input_value = table.concat(api.nvim_buf_get_lines(self.containers.input.bufnr, 0, -1, false), "\n")
+    if self.token_count == nil then self:initialize_token_count() end
+    local tokens = self.token_count + Utils.tokens.calculate_tokens(input_value)
+    hint_text = "Tokens: " .. tostring(tokens) .. "; " .. hint_text
+  end
+
+  local buf = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_lines(buf, 0, -1, false, { hint_text })
+  api.nvim_buf_set_extmark(buf, INPUT_HINT_NAMESPACE, 0, 0, { hl_group = "AvantePopupHint", end_col = #hint_text })
+
+  -- Get the current window size
+  local win_width = api.nvim_win_get_width(self.containers.input.winid)
+  local width = #hint_text
+
+  -- Create the floating window
+  self.input_hint_window = api.nvim_open_win(buf, false, {
+    relative = "win",
+    win = self.containers.input.winid,
+    width = width,
+    height = 1,
+    row = self:get_input_float_window_row(),
+    col = math.max(win_width - width, 0), -- Display in the bottom right corner
+    style = "minimal",
+    border = "none",
+    focusable = false,
+    zindex = 100,
+  })
 end
 
 function Sidebar:close_selected_files_hint()
