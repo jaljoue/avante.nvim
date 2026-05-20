@@ -40,6 +40,8 @@ local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
 local lockfile_path = vim.fn.stdpath("data") .. "/avante/openai-timer.lock"
 local chatgpt_model_ids = {
+  "gpt-5.5",
+  "gpt-5.4",
   "gpt-5.3-codex",
   "gpt-5.2-codex",
   "gpt-5.2",
@@ -59,32 +61,6 @@ M._file_watcher = nil
 
 function M:is_disable_stream() return false end
 
-function M:list_models()
-  local provider_conf = Providers.parse_config(self)
-  ---@cast provider_conf AvanteOpenAIProvider
-  if provider_conf.auth_type ~= "chatgpt" then
-    return {
-      {
-        id = provider_conf.model,
-        name = "openai/" .. provider_conf.model,
-        display_name = "openai/" .. provider_conf.model,
-      },
-    }
-  end
-  return vim
-    .iter(chatgpt_model_ids)
-    :map(
-      function(model_id)
-        return {
-          id = model_id,
-          name = "openai/" .. model_id,
-          display_name = "openai/" .. model_id,
-        }
-      end
-    )
-    :totable()
-end
-
 local function is_chatgpt_model_id(model) return model ~= nil and vim.tbl_contains(chatgpt_model_ids, model) end
 
 local function resolve_chatgpt_model(provider_conf)
@@ -93,7 +69,7 @@ local function resolve_chatgpt_model(provider_conf)
   local fallback = chatgpt_model_ids[1]
   if provider_conf.model and provider_conf.model ~= "" then
     Utils.warn(
-      "OpenAI ChatGPT auth supports only " .. table.concat(chatgpt_model_ids, ", ") .. "; using " .. fallback,
+      "OpenAI ChatGPT mode supports only " .. table.concat(chatgpt_model_ids, ", ") .. "; using " .. fallback,
       { once = true, title = "Avante" }
     )
   end
@@ -563,9 +539,9 @@ function M.authenticate()
     })
     input:open()
     if auth_url then
-      vim.schedule(function()
-        vim.notify("Open the copied URL, then paste the callback URL or code here.", vim.log.levels.INFO)
-      end)
+      vim.schedule(
+        function() vim.notify("Open the copied URL, then paste the callback URL or code here.", vim.log.levels.INFO) end
+      )
     end
   end
 
@@ -580,14 +556,14 @@ function M.authenticate()
           return
         end
 
-        OAuthServer.wait_for_callback(state,
-        function(code)
+        OAuthServer.wait_for_callback(state, function(code)
           exchange_code(code, server_info.redirect_uri)
           OAuthServer.stop()
-        end,
-        function(error_msg)
+        end, function(error_msg)
           OAuthServer.stop()
-          vim.schedule(function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end)
+          vim.schedule(
+            function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end
+          )
         end)
 
         local browser_url = build_auth_url(server_info.redirect_uri)

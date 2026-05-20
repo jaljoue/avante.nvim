@@ -115,7 +115,10 @@ function M.show_auth_url(opts)
       vim.notify(string.format("Opened %s login URL in browser", provider_name), vim.log.levels.INFO)
     else
       copy_url(copy_target)
-      vim.notify(string.format("Could not open browser (%s). URL copied to clipboard.", tostring(err)), vim.log.levels.WARN)
+      vim.notify(
+        string.format("Could not open browser (%s). URL copied to clipboard.", tostring(err)),
+        vim.log.levels.WARN
+      )
     end
     close_popup()
   end
