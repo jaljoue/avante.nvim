@@ -105,6 +105,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field is_user_submission boolean | nil
 ---@field provider string | nil
 ---@field model string | nil
+---@field mode string | nil
 ---@field selected_code AvanteSelectedCode | nil
 ---@field selected_filepaths string[] | nil
 ---@field tool_use_logs string[] | nil
@@ -363,7 +364,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field parse_api_key fun(): string | nil
 ---@field parse_stream_data? AvanteStreamParser
 ---@field on_error? fun(result: table<string, any>): nil
----@field transform_tool? fun(self: AvanteProviderFunctor, tool: AvanteLLMTool): AvanteOpenAITool | AvanteClaudeTool
+---@field transform_tool? fun(self: AvanteProviderFunctor, tool: AvanteLLMTool, use_prefix?: boolean): AvanteOpenAITool | AvanteClaudeTool
 ---@field get_rate_limit_sleep_time? fun(self: AvanteProviderFunctor, headers: table<string, string>): integer | nil
 ---@field list_models? fun(self): AvanteProviderModelList | nil
 ---

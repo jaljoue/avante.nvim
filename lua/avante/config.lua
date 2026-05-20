@@ -26,8 +26,10 @@ local M = {}
 --- Default configuration for project-specific instruction file
 M.instructions_file = "avante.md"
 ---@class avante.Config
+---@field public session_recovery any
 M._defaults = {
   debug = false,
+  log_level = vim.log.levels.WARN,
   ---@alias avante.Mode "agentic" | "legacy"
   ---@type avante.Mode
   mode = "agentic",
@@ -46,9 +48,9 @@ M._defaults = {
   -- For most providers that we support we will determine this automatically.
   -- If you wish to use a given implementation, then you can override it here.
   tokenizer = "tiktoken",
-  ---@type string | fun(): string | nil
+  ---@type string | nil | fun(): string
   system_prompt = nil,
-  ---@type string | fun(): string | nil
+  ---@type string | nil | fun(): string
   override_prompt_dir = nil,
   rules = {
     project_dir = nil, ---@type string | nil (could be relative dirpath)
@@ -255,8 +257,8 @@ M._defaults = {
       auth_method = "gemini-api-key",
     },
     ["claude-code"] = {
-      command = "npx",
-      args = { "-y", "-g", "@zed-industries/claude-code-acp" },
+      command = "claude-agent-acp",
+      args = {},
       env = {
         NODE_NO_WARNINGS = "1",
         ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY"),
@@ -270,8 +272,8 @@ M._defaults = {
       args = { "acp" },
     },
     ["codex"] = {
-      command = "npx",
-      args = { "-y", "-g", "@zed-industries/codex-acp" },
+      command = "codex-acp",
+      args = {},
       env = {
         NODE_NO_WARNINGS = "1",
         HOME = os.getenv("HOME"),
@@ -285,7 +287,7 @@ M._defaults = {
     },
     ["kimi-cli"] = {
       command = "kimi",
-      args = { "--acp" },
+      args = { "acp" },
     },
   },
   ---To add support for custom provider, follow the format below
@@ -587,7 +589,7 @@ M._defaults = {
   history = {
     max_tokens = 4096,
     carried_entry_count = nil,
-    storage_path = Utils.join_paths(vim.fn.stdpath("state"), "avante"),
+    storage_path = vim.fs.joinpath(vim.fn.stdpath("state"), "avante"),
     paste = {
       extension = "png",
       filename = "pasted-%Y-%m-%d-%H-%M-%S",
@@ -674,6 +676,8 @@ M._defaults = {
     },
     select_model = "<leader>a?", -- Select model command
     select_history = "<leader>ah", -- Select history command
+    select_acp_model = "<leader>aM", -- Select ACP agent model
+    select_acp_mode = "<leader>am", -- Select ACP agent mode
     confirm = {
       focus_window = "<C-w>f",
       code = "c",
@@ -815,8 +819,8 @@ M._defaults = {
 ---@diagnostic disable-next-line: missing-fields
 M._options = {}
 
-local function get_config_dir_path() return Utils.join_paths(vim.fn.expand("~"), ".config", "avante.nvim") end
-local function get_config_file_path() return Utils.join_paths(get_config_dir_path(), "config.json") end
+local function get_config_dir_path() return vim.fs.joinpath(vim.fn.expand("~"), ".config", "avante.nvim") end
+local function get_config_file_path() return vim.fs.joinpath(get_config_dir_path(), "config.json") end
 
 --- Function to save the last used model
 ---@param model_name string
@@ -908,20 +912,24 @@ local function apply_model_selection(config, model_name, provider_name)
         table.insert(target_provider.model_names, model_name_)
       end
     end
-    Utils.info(string.format("Using previously selected model: %s/%s", target_provider_name, model_name))
+    if not config.windows.sidebar_header.include_model then
+      Utils.info(string.format("Using previously selected model: %s/%s", target_provider_name, model_name))
+    end
   end
 end
 
 ---@param opts table<string, any>|nil -- Optional table parameter for configuration settings
 function M.setup(opts)
   opts = opts or {} -- Ensure `opts` is defined with a default table
-  if vim.fn.has("nvim-0.11") == 1 then
-    vim.validate("opts", opts, "table", true)
-  else
-    vim.validate({ opts = { opts, "table", true } })
+  vim.validate("opts", opts, "table", true)
+
+  local global_opts = {}
+  if vim.g.avante ~= nil then
+    vim.validate("vim.g.avante", vim.g.avante, "table", true)
+    global_opts = vim.deepcopy(vim.g.avante, true)
   end
 
-  opts = opts or {}
+  opts = vim.tbl_deep_extend("force", global_opts, opts or {})
 
   local migration_url = "https://github.com/yetone/avante.nvim/wiki/Provider-configuration-migration-guide"
 
@@ -1068,15 +1076,15 @@ function M.setup(opts)
     )
   end
 
-  if vim.fn.has("nvim-0.11") == 1 then
-    vim.validate("provider", M._options.provider, "string", false)
-  else
-    vim.validate({ provider = { M._options.provider, "string", false } })
-  end
+  vim.validate("provider", M._options.provider, "string", false)
 
   for k, v in pairs(M._options.providers) do
     M._options.providers[k] = type(v) == "function" and v() or v
   end
+
+  vim.g.avante = vim.tbl_deep_extend("force", vim.g.avante or {}, {
+    log_level = merged.log_level,
+  })
 end
 
 ---@param opts table<string, any>
