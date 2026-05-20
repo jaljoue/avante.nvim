@@ -106,9 +106,11 @@ busted.describe("claude provider", function()
   -- Token Storage Tests
   busted.describe("Token storage and retrieval", function()
     local claude_provider
+    local claude_auth
 
     busted.before_each(function()
       package.loaded["avante.providers.claude"] = nil
+      package.loaded["avante.auth.providers.claude"] = nil
       package.loaded["avante.auth.store"] = {
         update = function() end,
         read = function() return nil end,
@@ -116,12 +118,13 @@ busted.describe("claude provider", function()
         path = function() return "" end,
       }
       claude_provider = require("avante.providers.claude")
+      claude_auth = require("avante.auth.providers.claude")
     end)
 
     busted.describe("store_tokens", function()
       async.it("should store tokens with correct structure in state", function()
         -- Initialize state
-        claude_provider.state = { claude_token = nil }
+        claude_auth.state = { claude_token = nil }
 
         local mock_tokens = create_mock_token_response()
         local original_time = os.time()
@@ -148,16 +151,16 @@ busted.describe("claude provider", function()
         io.open = original_open
         vim.fn.system = original_system
 
-        assert.not_nil(claude_provider.state.claude_token)
-        assert.equals(mock_tokens.access_token, claude_provider.state.claude_token.access_token)
-        assert.equals(mock_tokens.refresh_token, claude_provider.state.claude_token.refresh_token)
-        assert.is_number(claude_provider.state.claude_token.expires_at)
+        assert.not_nil(claude_auth.state.claude_token)
+        assert.equals(mock_tokens.access_token, claude_auth.state.claude_token.access_token)
+        assert.equals(mock_tokens.refresh_token, claude_auth.state.claude_token.refresh_token)
+        assert.is_number(claude_auth.state.claude_token.expires_at)
         -- expires_at should be approximately now + expires_in
-        assert.is_true(claude_provider.state.claude_token.expires_at > original_time)
+        assert.is_true(claude_auth.state.claude_token.expires_at > original_time)
       end)
 
       async.it("should include all required fields", function()
-        claude_provider.state = { claude_token = nil }
+        claude_auth.state = { claude_token = nil }
 
         local mock_tokens = create_mock_token_response()
 
@@ -180,7 +183,7 @@ busted.describe("claude provider", function()
         io.open = original_open
         vim.fn.system = original_system
 
-        local token = claude_provider.state.claude_token
+        local token = claude_auth.state.claude_token
         assert.not_nil(token.access_token)
         assert.not_nil(token.refresh_token)
         assert.not_nil(token.expires_at)
@@ -192,29 +195,30 @@ busted.describe("claude provider", function()
   busted.describe("Authentication flow initiation", function()
     local claude_provider
     local Config
+    local captured_oauth_opts
 
     busted.before_each(function()
       package.loaded["avante.providers.claude"] = nil
+      package.loaded["avante.auth.providers.claude"] = nil
       package.loaded["avante.config"] = nil
+      package.loaded["avante.ui.oauth"] = nil
+      captured_oauth_opts = nil
       Config = require("avante.config")
       -- Set up minimal config
       Config.input = {
         provider = "native",
         provider_opts = {},
       }
+      package.loaded["avante.ui.oauth"] = {
+        show_auth_url = function(opts)
+          captured_oauth_opts = opts
+        end,
+      }
       claude_provider = require("avante.providers.claude")
     end)
 
     busted.describe("authenticate", function()
       async.it("should generate PKCE parameters", function()
-        -- Mock vim.ui.open to prevent browser opening
-        local captured_url = nil
-        local original_open = vim.ui.open
-        vim.ui.open = function(url)
-          captured_url = url
-          return true
-        end
-
         -- Mock vim.notify to prevent notifications
         local original_notify = vim.notify
         vim.notify = function() end
@@ -233,23 +237,15 @@ busted.describe("claude provider", function()
         -- Wait for vim.schedule callback to execute
         async_util.util.sleep(100)
 
-        vim.ui.open = original_open
         vim.notify = original_notify
 
         -- Verify URL was generated with PKCE parameters
-        assert.not_nil(captured_url)
-        assert.is_true(captured_url:match("code_challenge=") ~= nil)
-        assert.is_true(captured_url:match("code_challenge_method=S256") ~= nil)
+        assert.not_nil(captured_oauth_opts)
+        assert.is_true(captured_oauth_opts.auth_url:match("code_challenge=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("code_challenge_method=S256") ~= nil)
       end)
 
       async.it("should construct authorization URL with correct parameters", function()
-        local captured_url = nil
-        local original_open = vim.ui.open
-        vim.ui.open = function(url)
-          captured_url = url
-          return true
-        end
-
         local original_notify = vim.notify
         vim.notify = function() end
 
@@ -266,27 +262,20 @@ busted.describe("claude provider", function()
         -- Wait for vim.schedule callback to execute
         async_util.util.sleep(100)
 
-        vim.ui.open = original_open
         vim.notify = original_notify
 
         -- Check for required OAuth parameters
-        assert.is_true(captured_url:match("client_id=") ~= nil)
-        assert.is_true(captured_url:match("response_type=code") ~= nil)
-        assert.is_true(captured_url:match("redirect_uri=") ~= nil)
-        assert.is_true(captured_url:match("scope=") ~= nil)
-        assert.is_true(captured_url:match("state=") ~= nil)
-        assert.is_true(captured_url:match("code_challenge=") ~= nil)
-        assert.is_true(captured_url:match("code_challenge_method=S256") ~= nil)
+        assert.not_nil(captured_oauth_opts)
+        assert.is_true(captured_oauth_opts.auth_url:match("client_id=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("response_type=code") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("redirect_uri=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("scope=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("state=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("code_challenge=") ~= nil)
+        assert.is_true(captured_oauth_opts.auth_url:match("code_challenge_method=S256") ~= nil)
       end)
 
       async.it("should use correct OAuth endpoint", function()
-        local captured_url = nil
-        local original_open = vim.ui.open
-        vim.ui.open = function(url)
-          captured_url = url
-          return true
-        end
-
         local original_notify = vim.notify
         vim.notify = function() end
 
@@ -303,10 +292,10 @@ busted.describe("claude provider", function()
         -- Wait for vim.schedule callback to execute
         async_util.util.sleep(100)
 
-        vim.ui.open = original_open
         vim.notify = original_notify
 
-        assert.is_true(captured_url:match("^https://claude.ai/oauth/authorize") ~= nil)
+        assert.not_nil(captured_oauth_opts)
+        assert.is_true(captured_oauth_opts.auth_url:match("^https://claude.ai/oauth/authorize") ~= nil)
       end)
 
       async.it("should fallback to clipboard when vim.ui.open fails", function()
@@ -336,6 +325,12 @@ busted.describe("claude provider", function()
         -- Wait for vim.schedule callback to execute
         async_util.util.sleep(100)
 
+        assert.not_nil(captured_oauth_opts)
+        captured_oauth_opts.on_open({
+          auth_url = captured_oauth_opts.auth_url,
+          close = function() end,
+        })
+
         vim.ui.open = original_open
         vim.fn.setreg = original_setreg
         vim.notify = original_notify
@@ -351,31 +346,34 @@ busted.describe("claude provider", function()
   -- Token Refresh Logic Tests
   busted.describe("Token refresh logic", function()
     local claude_provider
+    local claude_auth
     local curl
 
     busted.before_each(function()
       package.loaded["avante.providers.claude"] = nil
+      package.loaded["avante.auth.providers.claude"] = nil
       package.loaded["plenary.curl"] = nil
       claude_provider = require("avante.providers.claude")
+      claude_auth = require("avante.auth.providers.claude")
       curl = require("plenary.curl")
     end)
 
     busted.describe("refresh_token", function()
       busted.it("should exit early when no state exists", function()
-        claude_provider.state = nil
+        claude_auth.state = nil
         local result = claude_provider.refresh_token(false, false)
         assert.is_false(result)
       end)
 
       busted.it("should exit early when no token exists in state", function()
-        claude_provider.state = { claude_token = nil }
+        claude_auth.state = { claude_token = nil }
         local result = claude_provider.refresh_token(false, false)
         assert.is_false(result)
       end)
 
       busted.it("should skip refresh when token is not expired and not forced", function()
         local non_expired_token = create_mock_token_data(false)
-        claude_provider.state = { claude_token = non_expired_token }
+        claude_auth.state = { claude_token = non_expired_token }
 
         local result = claude_provider.refresh_token(false, false)
         assert.is_false(result)
@@ -383,7 +381,7 @@ busted.describe("claude provider", function()
 
       async.it("should proceed when forced even if token not expired", function()
         local non_expired_token = create_mock_token_data(false)
-        claude_provider.state = { claude_token = non_expired_token }
+        claude_auth.state = { claude_token = non_expired_token }
 
         -- Mock curl.post
         local original_post = curl.post
@@ -421,7 +419,7 @@ busted.describe("claude provider", function()
 
       async.it("should make POST request with correct structure", function()
         local expired_token = create_mock_token_data(true)
-        claude_provider.state = { claude_token = expired_token }
+        claude_auth.state = { claude_token = expired_token }
 
         local captured_url = nil
         local captured_body = nil
@@ -471,7 +469,7 @@ busted.describe("claude provider", function()
 
       async.it("should handle successful refresh response", function()
         local expired_token = create_mock_token_data(true)
-        claude_provider.state = { claude_token = expired_token }
+        claude_auth.state = { claude_token = expired_token }
 
         local mock_response = create_mock_token_response()
 
@@ -505,13 +503,13 @@ busted.describe("claude provider", function()
         vim.fn.system = original_system
 
         -- Verify token was updated in state
-        assert.equals(mock_response.access_token, claude_provider.state.claude_token.access_token)
-        assert.equals(mock_response.refresh_token, claude_provider.state.claude_token.refresh_token)
+        assert.equals(mock_response.access_token, claude_auth.state.claude_token.access_token)
+        assert.equals(mock_response.refresh_token, claude_auth.state.claude_token.refresh_token)
       end)
 
       async.it("should handle error response (status >= 400)", function()
         local expired_token = create_mock_token_data(true)
-        claude_provider.state = { claude_token = expired_token }
+        claude_auth.state = { claude_token = expired_token }
 
         -- Mock curl.post to return error
         local original_post = curl.post
@@ -536,7 +534,7 @@ busted.describe("claude provider", function()
 
         -- Should not crash and return gracefully
         -- State should remain unchanged
-        assert.equals(expired_token.access_token, claude_provider.state.claude_token.access_token)
+        assert.equals(expired_token.access_token, claude_auth.state.claude_token.access_token)
 
         curl.post = original_post
         vim.notify = original_notify
@@ -567,6 +565,7 @@ busted.describe("claude provider", function()
 
     busted.before_each(function()
       package.loaded["avante.providers.claude"] = nil
+      package.loaded["avante.auth.providers.claude"] = nil
       package.loaded["avante.config"] = nil
       package.loaded["avante.auth.store"] = {
         update = function() end,
@@ -594,20 +593,18 @@ busted.describe("claude provider", function()
         P["claude"] = { auth_type = "api" }
 
         claude_provider.setup()
+        local ClaudeAuth = require("avante.auth.providers.claude")
 
         P.parse_config = original_parse
 
         -- In API mode, should have set the api_key_name
         assert.not_nil(claude_provider.api_key_name)
-        assert.is_true(claude_provider._is_setup)
+        assert.is_true(ClaudeAuth._is_setup)
       end)
     end)
 
     busted.describe("Max mode setup", function()
       async.it("should initialize state when nil", function()
-        -- Start with no state
-        claude_provider.state = nil
-
         -- Mock everything to prevent actual setup
         local P = require("avante.providers")
         P.parse_config = function() return { auth_type = "max" }, {} end
@@ -615,10 +612,6 @@ busted.describe("claude provider", function()
         package.loaded["avante.tokenizers"] = {
           setup = function() end,
         }
-
-        -- Mock vim.ui.open to prevent browser
-        local original_open = vim.ui.open
-        vim.ui.open = function() return true end
 
         -- Mock Input
         package.loaded["avante.ui.input"] = {
@@ -635,6 +628,9 @@ busted.describe("claude provider", function()
 
         Config.provider = "claude"
         P["claude"] = { auth_type = "max" }
+        local ClaudeAuth = require("avante.auth.providers.claude")
+        ClaudeAuth.state = nil
+        ClaudeAuth.authenticate = function() end
 
         -- This will trigger authenticate since no token file exists
         -- We're just checking it doesn't crash
@@ -643,12 +639,70 @@ busted.describe("claude provider", function()
         -- Wait for any vim.schedule callbacks to complete
         async_util.util.sleep(100)
 
-        vim.ui.open = original_open
         vim.notify = original_notify
 
         -- State should have been initialized
-        assert.not_nil(claude_provider.state)
+        assert.not_nil(ClaudeAuth.state)
       end)
+    end)
+  end)
+
+  busted.describe("Auth provider headers", function()
+    local claude_auth
+    local curl
+
+    busted.before_each(function()
+      package.loaded["avante.auth.providers.claude"] = nil
+      package.loaded["plenary.curl"] = nil
+      package.loaded["avante.auth.store"] = {
+        update = function() end,
+        read = function() return nil end,
+        watch = function() end,
+        path = function() return "" end,
+      }
+      claude_auth = require("avante.auth.providers.claude")
+      curl = require("plenary.curl")
+    end)
+
+    busted.it("returns API key headers in API mode", function()
+      local headers = claude_auth.get_headers({ auth_type = "api", api_key_name = "ANTHROPIC_API_KEY" }, {
+        parse_api_key = function() return "api-key" end,
+      })
+
+      assert.equals("api-key", headers["x-api-key"])
+      assert.equals("prompt-caching-2024-07-31", headers["anthropic-beta"])
+    end)
+
+    busted.it("returns OAuth headers in max mode", function()
+      claude_auth.state = { claude_token = create_mock_token_data(false) }
+
+      local headers = claude_auth.get_headers({ auth_type = "max" }, {
+        parse_api_key = function() return nil end,
+      })
+
+      assert.equals("Bearer mock_access_token_123", headers.authorization)
+      assert.equals("claude-cli/2.1.2 (external, cli)", headers["user-agent"])
+      assert.is_true(headers["anthropic-beta"]:match("oauth%-2025%-04%-20") ~= nil)
+    end)
+
+    busted.it("refreshes expired OAuth tokens before returning headers", function()
+      claude_auth.state = { claude_token = create_mock_token_data(true) }
+
+      local original_post = curl.post
+      curl.post = function()
+        return {
+          status = 200,
+          body = vim.json.encode(create_mock_token_response()),
+        }
+      end
+
+      local headers = claude_auth.get_headers({ auth_type = "max" }, {
+        parse_api_key = function() return nil end,
+      })
+
+      curl.post = original_post
+
+      assert.equals("Bearer mock_access_token_abcdef123456", headers.authorization)
     end)
   end)
 end)

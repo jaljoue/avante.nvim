@@ -297,7 +297,7 @@ M._defaults = {
     ---@type AvanteSupportedProvider
     openai = {
       endpoint = "https://api.openai.com/v1",
-      auth_type = "api", -- Set to "chatgpt" to sign in with ChatGPT subscription
+      auth_type = "api", -- Set to "codex" to sign in with a Codex subscription
       model = "gpt-4o",
       timeout = 30000, -- Timeout in milliseconds, increase this for reasoning models
       context_window = 128000, -- Number of tokens to send to the model for context

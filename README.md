@@ -480,7 +480,7 @@ If both are used, options passed to `setup()` override values from `vim.g.avante
   providers = {
     openai = {
       endpoint = "https://api.openai.com/v1",
-      auth_type = "api", -- Set to "chatgpt" to sign in with ChatGPT subscription
+      auth_type = "api", -- Set to "codex" to sign in with a Codex subscription
       model = "gpt-4o",
     },
     claude = {
@@ -897,8 +897,8 @@ You may need to run `AvanteSwitchProvider claude` to initiate the authentication
 
 ```
 
-### Using ChatGPT Subscription
-To login with your ChatGPT subscription, set the **auth_type** of the OpenAI provider entry in your config to "chatgpt", re-open Neovim then the authentication process will start in your browser and return automatically after authorization. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
+### Using Codex Subscription
+To login with your Codex subscription, set the **auth_type** of the OpenAI provider entry in your config to "codex", re-open Neovim then the authentication process will start in your browser and return automatically after authorization. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
 
 You may need to run `AvanteSwitchProvider openai` to initiate the authentication if you previously had a different provider selected.
 
@@ -907,7 +907,7 @@ You may need to run `AvanteSwitchProvider openai` to initiate the authentication
 
   openai = {
     -- ...
-    auth_type = "chatgpt",
+    auth_type = "codex",
   },
 
 ```
