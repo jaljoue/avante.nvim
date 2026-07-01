@@ -142,7 +142,7 @@ function M.read()
       return data
     end
 
-    Utils.warn("Claude auth file is corrupted, re-authentication required", { once = true, title = "Avante" })
+    Utils.warn("Auth file is corrupted, re-authentication required", { once = true, title = "Avante" })
     pcall(legacy.rm, legacy)
   end
 
