@@ -2,7 +2,7 @@ if vim.fn.has("nvim-0.12") == 0 then
   vim.api.nvim_echo({
     { "Avante requires at least nvim-0.12", "ErrorMsg" },
     { "Please upgrade your neovim version", "WarningMsg" },
-    { "Press any key to exit", "ErrorMsg" },
+    { "Press any key to exit",              "ErrorMsg" },
   }, true, {})
   vim.fn.getchar()
   vim.cmd([[quit]])
@@ -45,7 +45,7 @@ if Config.support_paste_image() then
       local img_clip_util = require("img-clip.util")
       local img_clip_clipboard = require("img-clip.clipboard")
       local is_image_candidate = (line and (img_clip_util.is_image_url(line) or img_clip_util.is_image_path(line)))
-        or img_clip_clipboard.content_is_image()
+          or img_clip_clipboard.content_is_image()
       if not is_image_candidate then return overridden(lines, phase) end
 
       local ok = Clipboard.paste_image(line)
@@ -196,44 +196,10 @@ end, {
   nargs = "?",
   complete = function(_, _, _) return { "history", "cache" } end,
 })
-api.nvim_create_user_command("AvanteShowRepoMap", function() require("avante.repo_map").show() end, {
-  desc = "avante: show repo map",
-  nargs = 0,
-})
-api.nvim_create_user_command("AvanteModels", function(opts)
-  local all = false
-  local timeout
-  for _, arg in ipairs(opts.fargs) do
-    if arg == "--all" and not all then
-      all = true
-    else
-      local value = tonumber(arg)
-      if timeout ~= nil or not value or value <= 0 or value % 1 ~= 0 then
-        Utils.error("Invalid arguments. Usage: AvanteModels [--all] [timeout]")
-        return
-      end
-      timeout = value
-    end
-  end
-  require("avante.model_selector").open(all, timeout)
-end, {
-  desc = "avante: show models",
-  nargs = "*",
-  complete = function() return { "--all" } end,
-})
-api.nvim_create_user_command("AvanteACPModels", function() require("avante.api").select_acp_model() end, {
-  desc = "avante: switch ACP model",
-  nargs = 0,
-})
-api.nvim_create_user_command("AvanteACPModes", function() require("avante.api").select_acp_mode() end, {
-  desc = "avante: switch ACP mode",
-  nargs = 0,
-})
-api.nvim_create_user_command("AvanteHistory", function() require("avante.api").select_history() end, {
-  desc = "avante: show histories",
-  nargs = 0,
-})
-api.nvim_create_user_command("AvanteStop", function() require("avante.api").stop() end, {
-  desc = "avante: stop current AI request",
-  nargs = 0,
-})
+cmd("ShowRepoMap", function() require("avante.repo_map").show() end, { desc = "avante: show repo map" })
+cmd("Models", function() require("avante.model_selector").open() end, { desc = "avante: show models" })
+cmd("ACPModels", function() require("avante.api").select_acp_model() end, { desc = "avante: switch ACP model" })
+cmd("ACPModes", function() require("avante.api").select_acp_mode() end, { desc = "avante: switch ACP mode" })
+cmd("History", function() require("avante.api").select_history() end, { desc = "avante: show histories" })
+cmd("Stop", function() require("avante.api").stop() end, { desc = "avante: stop current AI request" })
+cmd("Login", function() require("avante.api").login() end, { desc = "avante: log in to a provider", nargs = 0 })
