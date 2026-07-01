@@ -22,15 +22,14 @@ M.role_map = {
   assistant = "assistant",
 }
 
-local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
+local codex_base_url = "https://chatgpt.com/backend-api/codex"
+local codex_endpoint = codex_base_url .. "/responses"
 local codex_model_ids = {
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.3-codex",
   "gpt-5.2-codex",
-  "gpt-5.2",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-mini",
+  "gpt-5.2"
 }
 
 function M:is_disable_stream() return false end
@@ -87,6 +86,17 @@ function M:list_models()
   if self._model_list_cache then return self._model_list_cache end
 
   local provider_conf = Providers.parse_config(self)
+
+  if provider_conf.auth_type == "codex" then
+    return vim
+        .iter(codex_model_ids)
+        :map(function(model_id)
+          local prefixed_model_id = "codex/" .. model_id
+          return { id = prefixed_model_id, name = prefixed_model_id, display_name = prefixed_model_id }
+        end)
+        :totable()
+  end
+
   if not provider_conf.endpoint then
     Utils.error("OpenAI-compatible provider requires endpoint configuration")
     return {}
@@ -122,19 +132,19 @@ function M:list_models()
   end
 
   local models = vim
-    .iter(res_body.data)
-    :filter(function(model) return type(model) == "table" and type(model.id) == "string" end)
-    :map(
-      function(model)
-        return {
-          id = model.id,
-          name = model.id,
-          display_name = model.id,
-          version = tostring(model.created or model.owned_by or ""),
-        }
-      end
-    )
-    :totable()
+      .iter(res_body.data)
+      :filter(function(model) return type(model) == "table" and type(model.id) == "string" end)
+      :map(
+        function(model)
+          return {
+            id = model.id,
+            name = model.id,
+            display_name = model.id,
+            version = tostring(model.created or model.owned_by or ""),
+          }
+        end
+      )
+      :totable()
 
   self._model_list_cache = models
   return models
@@ -145,25 +155,25 @@ function M.get_user_message(opts)
   vim.deprecate("get_user_message", "parse_messages", "0.1.0", "avante.nvim")
   return table.concat(
     vim
-      .iter(opts.messages)
-      :filter(function(_, value) return value == nil or value.role ~= "user" end)
-      :fold({}, function(acc, value)
-        acc = vim.list_extend({}, acc)
-        acc = vim.list_extend(acc, { value.content })
-        return acc
-      end),
+    .iter(opts.messages)
+    :filter(function(_, value) return value == nil or value.role ~= "user" end)
+    :fold({}, function(acc, value)
+      acc = vim.list_extend({}, acc)
+      acc = vim.list_extend(acc, { value.content })
+      return acc
+    end),
     "\n"
   )
 end
 
 function M.is_reasoning_model(model)
   return model
-    and (string.match(model, "^o%d+") ~= nil or (string.match(model, "gpt%-5") ~= nil and model ~= "gpt-5-chat"))
+      and (string.match(model, "^o%d+") ~= nil or (string.match(model, "gpt%-5") ~= nil and model ~= "gpt-5-chat"))
 end
 
 function M.set_allowed_params(provider_conf, request_body)
   local use_response_api = provider_conf.auth_type == "codex" and true
-    or Providers.resolve_use_response_api(provider_conf, nil)
+      or Providers.resolve_use_response_api(provider_conf, nil)
   if M.is_reasoning_model(provider_conf.model) then
     -- Reasoning models have specific parameter requirements
     request_body.temperature = 1
@@ -246,7 +256,9 @@ function M:parse_messages(opts)
       -- Check if this is a reasoning message (object with type "reasoning")
       if msg.content.type == "reasoning" then
         -- Avoid re-sending response-item IDs unless explicitly allowed.
-        if allow_reasoning_input then
+        -- For codex auth, items are not persisted (store=false) so referencing
+        -- them by id is invalid. Skip reasoning items entirely.
+        if allow_reasoning_input and provider_conf.auth_type ~= "codex" then
           table.insert(messages, {
             type = "reasoning",
             id = msg.content.id,
@@ -273,13 +285,17 @@ function M:parse_messages(opts)
             },
           })
         elseif item.type == "reasoning" then
-          -- Add reasoning message directly (for Response API)
-          table.insert(messages, {
-            type = "reasoning",
-            id = item.id,
-            encrypted_content = item.encrypted_content,
-            summary = item.summary,
-          })
+          -- Add reasoning message directly (for Response API).
+          -- For codex auth, items are not persisted (store=false) so referencing
+          -- them by id is invalid. Skip reasoning items entirely.
+          if provider_conf.auth_type ~= "codex" then
+            table.insert(messages, {
+              type = "reasoning",
+              id = item.id,
+              encrypted_content = item.encrypted_content,
+              summary = item.summary,
+            })
+          end
         elseif item.type == "thinking" then
           local thinking_content = item.thinking or ""
           if thinking_content ~= "" then
@@ -333,8 +349,8 @@ function M:parse_messages(opts)
           -- Only skip tool_calls if using Response API with previous_response_id support
           -- Copilot uses Response API format but doesn't support previous_response_id
           local should_include_tool_calls = not use_response_api
-            or force_include_tool_calls
-            or not provider_conf.support_previous_response_id
+              or force_include_tool_calls
+              or not provider_conf.support_previous_response_id
 
           if should_include_tool_calls then
             -- For Response API without previous_response_id support (like Copilot),
@@ -421,10 +437,10 @@ function M:parse_messages(opts)
   vim.iter(messages):each(function(message)
     local role = message.role
     if
-      role == prev_role
-      and role ~= "tool"
-      and prev_type ~= "function_call"
-      and prev_type ~= "function_call_output"
+        role == prev_role
+        and role ~= "tool"
+        and prev_type ~= "function_call"
+        and prev_type ~= "function_call_output"
     then
       if role == self.role_map["assistant"] then
         table.insert(final_messages, { role = self.role_map["user"], content = "Ok" })
@@ -460,7 +476,7 @@ function M:add_text_message(ctx, text, state, opts)
   if ctx.content == nil then ctx.content = "" end
   ctx.content = ctx.content .. text
   local content =
-    ctx.content:gsub("<tool_code>", ""):gsub("</tool_code>", ""):gsub("<tool_call>", ""):gsub("</tool_call>", "")
+      ctx.content:gsub("<tool_code>", ""):gsub("</tool_code>", ""):gsub("<tool_call>", ""):gsub("</tool_call>", "")
   ctx.content = content
   local msg = HistoryMessage:new("assistant", ctx.content, {
     state = state,
@@ -715,14 +731,14 @@ function M:parse_response(ctx, data_stream, _, opts)
         self.last_response_id = jsn.response.id
       end
       if
-        ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
+          ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
       then
         ctx.returned_think_end_tag = true
         if opts.on_chunk then
           if
-            ctx.last_think_content
-            and ctx.last_think_content ~= vim.NIL
-            and ctx.last_think_content:sub(-1) ~= "\n"
+              ctx.last_think_content
+              and ctx.last_think_content ~= vim.NIL
+              and ctx.last_think_content:sub(-1) ~= "\n"
           then
             opts.on_chunk("\n</think>\n")
           else
@@ -813,7 +829,7 @@ function M:parse_response(ctx, data_stream, _, opts)
     end
   elseif delta.content then
     if
-      ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
+        ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
     then
       ctx.returned_think_end_tag = true
       if opts.on_chunk then
@@ -959,12 +975,12 @@ function M:parse_curl_args(prompt_opts)
   end
 
   local should_use_previous_response_id = use_response_api
-    and supports_previous_response_id
-    and has_function_outputs
-    and session_ctx
-    and session_ctx.last_response_id
-    and session_ctx.last_response_model == provider_conf.model
-    and session_ctx.last_response_auth_type == auth_type
+      and supports_previous_response_id
+      and has_function_outputs
+      and session_ctx
+      and session_ctx.last_response_id
+      and session_ctx.last_response_model == provider_conf.model
+      and session_ctx.last_response_auth_type == auth_type
   if use_response_api and has_function_outputs and not should_use_previous_response_id then
     prompt_opts.force_include_tool_calls = true
   end
