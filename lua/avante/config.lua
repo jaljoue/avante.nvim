@@ -104,6 +104,7 @@
 --- - `copilot`
 --- - `bedrock`
 --- - `ollama`
+--- - `openrouter`
 --- - `watsonx_code_assistant`
 --- - `mistral`
 ---
@@ -328,6 +329,7 @@ M.instructions_file = "avante.md"
 ---@field behaviour avante.Config.Behaviour Behaviour and automation options.
 ---@field prompt_logger avante.Config.PromptLogger Prompt logging options.
 ---@field windows table
+---@field model_selector { provider: avante.ModelSelectorProvider, provider_opts?: table }
 ---@field slash_commands AvanteSlashCommand[] see |*avante-slashcommands*|
 ---@field shortcuts AvanteShortcut[]  see |*avante-shortcuts*|
 ---@field ask_opts AskOptions
@@ -607,6 +609,24 @@ M._defaults = {
         reasoning_effort = "medium", -- low|medium|high, only used for reasoning models. For Response API, this will be converted to reasoning.effort
         -- background = false, -- Response API only: set to true to start a background task
         -- NOTE: previous_response_id is automatically managed by the provider for tool calling - don't set manually
+      },
+    },
+    ---@type AvanteSupportedProvider
+    openrouter = {
+      endpoint = "https://openrouter.ai/api/v1",
+      model = "openrouter/auto",
+      api_key_name = "OPENROUTER_API_KEY",
+      timeout = 30000,
+      model_list = {
+        output_modalities = { "text" },
+        supported_parameters = { "tools" },
+        sort = "most-popular",
+        cache_ttl = 3600,
+        initial_count = 40,
+      },
+      extra_request_body = {
+        temperature = 0.75,
+        max_tokens = 20480,
       },
     },
     ---@type AvanteSupportedProvider
@@ -1078,6 +1098,12 @@ M._defaults = {
     provider = "native",
     provider_opts = {},
     exclude_auto_select = {}, -- List of items to exclude from auto selection
+  },
+  model_selector = {
+    ---@alias avante.ModelSelectorProvider "nui" | "selector"
+    ---@type avante.ModelSelectorProvider
+    provider = "nui",
+    provider_opts = {},
   },
   input = {
     provider = "native",

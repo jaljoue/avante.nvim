@@ -13,6 +13,7 @@ local Utils = require("avante.utils")
 ---@field mistral AvanteProviderFunctor
 ---@field ollama AvanteProviderFunctor
 ---@field openai AvanteProviderFunctor
+---@field openrouter AvanteProviderFunctor
 ---@field vertex_claude AvanteProviderFunctor
 ---@field watsonx_code_assistant AvanteProviderFunctor
 local M = {}
@@ -149,7 +150,11 @@ M = setmetatable(M, {
 
     local provider_config = M.get_config(k)
 
-    if provider_config.__inherited_from ~= nil then
+    if k == "openrouter" then
+      local ok, module = pcall(require, "avante.providers.openrouter")
+      if not ok then error("Failed to load provider: openrouter", 2) end
+      provider_config = Utils.deep_extend_with_metatable("force", module, provider_config)
+    elseif provider_config.__inherited_from ~= nil then
       local base_provider_config = M.get_config(provider_config.__inherited_from)
       local ok, module = pcall(require, "avante.providers." .. provider_config.__inherited_from)
       if not ok then error("Failed to load provider: " .. provider_config.__inherited_from, 2) end

@@ -259,6 +259,13 @@ vim.g.avante_login = vim.g.avante_login
 ---@field allow_insecure? boolean Allow insecure server connections
 ---@field api_key_name? string
 ---Either the name of the environment variable containing the API key (avante will try a variant prefixed with "AVANTE_" as well) or if the value starts with "cmd:", avante will run the command and retreive the key from its stdout
+---@field model_list? {
+---  output_modalities?: string[],
+---  supported_parameters?: string[],
+---  sort?: string,
+---  cache_ttl?: integer,
+---  initial_count?: integer,
+---}
 ---@field _shellenv? string
 ---@field disable_tools? boolean disable if prompt consumes too many tokens
 ---@field entra? boolean
@@ -338,6 +345,17 @@ vim.g.avante_login = vim.g.avante_login
 ---@field max_input_tokens? integer
 ---@field max_output_tokens? integer
 ---@field policy? boolean
+---@field canonical_slug? string
+---@field description? string
+---@field context_length? integer
+---@field architecture? table
+---@field pricing? table<string, string>
+---@field top_provider? table
+---@field supported_parameters? string[]
+---@field default_parameters? table | nil
+---@field expiration_date? string | nil
+---@field benchmarks? table
+---@field sort_key? string
 ---
 ---@alias AvanteProviderModelList AvanteProviderModel[]
 ---
