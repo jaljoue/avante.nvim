@@ -30,7 +30,7 @@ local function run_copy_callback(opts, provider_name, auth_url, open_url, copy_t
   })
 end
 
----@param opts { provider_name?: string, auth_url: string, open_url?: string, copy_url?: string, on_open?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_copy?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_close?: fun() }
+---@param opts { provider_name?: string, auth_url: string, open_url?: string, copy_url?: string, disable_open?: boolean, on_open?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_copy?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_close?: fun() }
 ---@return boolean
 function M.show_auth_url(opts)
   opts = opts or {}
@@ -38,6 +38,7 @@ function M.show_auth_url(opts)
   local auth_url = opts.auth_url
   local open_url = opts.open_url or auth_url
   local copy_target = opts.copy_url or auth_url
+  local disable_open = opts.disable_open == true
 
   if type(auth_url) ~= "string" or auth_url == "" then
     vim.notify("OAuth URL is missing", vim.log.levels.ERROR)
@@ -150,13 +151,15 @@ function M.show_auth_url(opts)
     string.format("  Authenticate %s", provider_name),
     "",
     "  Choose an action:",
-    "    [Enter]/[o] Open in browser",
+  }
+  if not disable_open then table.insert(lines, "    [Enter]/[o] Open in browser") end
+  vim.list_extend(lines, {
     "    [c]/[y] Copy URL and continue manually",
     "    [q]/[Esc] Close",
     "",
     "  Auth URL:",
     "  " .. auth_url,
-  }
+  })
 
   local preloaded = false
   if popup.bufnr and vim.api.nvim_buf_is_valid(popup.bufnr) then
@@ -180,15 +183,83 @@ function M.show_auth_url(opts)
     end
   end
 
-  popup:map("n", "<CR>", open_action, { noremap = true, silent = true })
-  popup:map("n", "o", open_action, { noremap = true, silent = true })
-  popup:map("n", "O", open_action, { noremap = true, silent = true })
+  if not disable_open then
+    popup:map("n", "<CR>", open_action, { noremap = true, silent = true })
+    popup:map("n", "o", open_action, { noremap = true, silent = true })
+    popup:map("n", "O", open_action, { noremap = true, silent = true })
+  end
   popup:map("n", "c", copy_action, { noremap = true, silent = true })
   popup:map("n", "C", copy_action, { noremap = true, silent = true })
   popup:map("n", "y", copy_action, { noremap = true, silent = true })
   popup:map("n", "Y", copy_action, { noremap = true, silent = true })
   popup:map("n", "q", close_popup, { noremap = true, silent = true })
   popup:map("n", "<Esc>", close_popup, { noremap = true, silent = true })
+
+  return true
+end
+
+---@class AvanteOAuthMethodContext
+---@field provider_name string
+---@field close fun()
+
+---@class AvanteOAuthMethod
+---@field id string unique method id, e.g. "browser", "headless", "api_key"
+---@field label string text shown in the method picker
+---@field run fun(ctx: AvanteOAuthMethodContext) starts the login flow
+---@field headless? boolean works without a local browser; auto-selected when no UI is attached
+
+---Shows a picker of the login methods a provider supports and runs the chosen
+---one. With a single method (or no attached UI, which prefers the first method
+---marked headless) it runs directly without showing a picker.
+---@param opts { provider_name?: string, methods: AvanteOAuthMethod[], on_close?: fun() }
+---@return boolean
+function M.select_method(opts)
+  opts = opts or {}
+  local provider_name = opts.provider_name or "Provider"
+  local methods = opts.methods or {}
+
+  if #methods == 0 then
+    vim.notify(string.format("No login methods available for %s", provider_name), vim.log.levels.ERROR)
+    if opts.on_close then opts.on_close() end
+    return false
+  end
+
+  local function run(method)
+    method.run({
+      provider_name = provider_name,
+      close = function()
+        if opts.on_close then opts.on_close() end
+      end,
+    })
+  end
+
+  if #vim.api.nvim_list_uis() == 0 then
+    local fallback = methods[1]
+    for _, method in ipairs(methods) do
+      if method.headless then
+        fallback = method
+        break
+      end
+    end
+    run(fallback)
+    return true
+  end
+
+  if #methods == 1 then
+    run(methods[1])
+    return true
+  end
+
+  vim.ui.select(methods, {
+    prompt = "Select auth method",
+    format_item = function(method) return method.label end,
+  }, function(method)
+    if not method then
+      if opts.on_close then opts.on_close() end
+      return
+    end
+    run(method)
+  end)
 
   return true
 end
