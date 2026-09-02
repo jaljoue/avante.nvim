@@ -54,6 +54,17 @@ busted.describe("openai auth provider", function()
     }
     package.loaded["avante.ui.oauth"] = {
       show_auth_url = function() end,
+      select_method = function(opts)
+        -- Simulate a session without an attached UI: the headless-marked
+        -- method should be the one that runs.
+        for _, method in ipairs(opts.methods or {}) do
+          if method.headless then
+            method.run({ provider_name = opts.provider_name, close = function() end })
+            return true
+          end
+        end
+        return false
+      end,
     }
     openai_auth = require("avante.auth.providers.openai")
     curl = require("plenary.curl")
@@ -117,10 +128,21 @@ busted.describe("openai auth provider", function()
     assert.is_true(captured_body:match("refresh_token=mock_refresh_token_456") ~= nil)
   end)
 
-  async.it("constructs OAuth URL with PKCE and codex parameters", function()
+  async.it("constructs OAuth URL with PKCE and codex parameters in headless flow", function()
     local captured_url
-    package.loaded["avante.ui.oauth"] = {
-      show_auth_url = function(opts) captured_url = opts.auth_url end,
+    local server_started = false
+    local original_setreg = vim.fn.setreg
+    vim.fn.setreg = function(reg, value)
+      if reg == "+" then captured_url = value end
+      return true
+    end
+    package.loaded["avante.auth.oauth_server"] = {
+      start = function()
+        server_started = true
+        return { redirect_uri = "http://localhost:1455/auth/callback" }
+      end,
+      wait_for_callback = function() end,
+      stop = function() end,
     }
     package.loaded["avante.auth.providers.openai"] = nil
     openai_auth = require("avante.auth.providers.openai")
@@ -128,6 +150,9 @@ busted.describe("openai auth provider", function()
     openai_auth.authenticate()
     async_util.util.sleep(100)
 
+    vim.fn.setreg = original_setreg
+
+    assert.is_false(server_started)
     assert.is_true(captured_url:match("^https://auth.openai.com/oauth/authorize") ~= nil)
     assert.is_true(captured_url:match("client_id=") ~= nil)
     assert.is_true(captured_url:match("response_type=code") ~= nil)
