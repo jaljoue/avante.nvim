@@ -21,7 +21,12 @@ local auth_issuer = "https://auth.openai.com"
 local auth_endpoint = auth_issuer .. "/oauth/authorize"
 local token_endpoint = auth_issuer .. "/oauth/token"
 local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+local redirect_uri = "http://localhost:1455/auth/callback"
 local lockfile_path = vim.fn.stdpath("data") .. "/avante/openai-timer.lock"
+local refresh_skew_sec = 120
+local refresh_check_interval_ms = 60000
+local manager_check_interval_ms = 30000
+local default_expires_in_sec = 3600
 
 ---@private
 ---@class AvanteOpenAIState
@@ -35,6 +40,8 @@ M._is_setup = false
 M._refresh_timer = nil
 M._manager_check_timer = nil
 M._file_watcher = nil
+M._refresh_in_flight = false
+M._provider = nil
 
 local function is_valid_token(token)
   return token ~= nil
@@ -97,57 +104,51 @@ local function extract_account_id(tokens)
   return nil
 end
 
-local function is_process_running(pid)
-  local result = vim.uv.kill(pid, 0)
-  if result ~= nil and result == 0 then
-    return true
-  else
-    return false
-  end
+local function is_process_running(pid) return vim.uv.kill(pid, 0) == 0 end
+
+local function read_lock_pid()
+  local ok, content = pcall(function() return Path:new(lockfile_path):read() end)
+  if not ok then return nil end
+  return tonumber(content)
 end
 
 local function try_acquire_timer_lock()
-  local lockfile = Path:new(lockfile_path)
-  local tmp_lockfile = lockfile_path .. ".tmp." .. vim.fn.getpid()
+  local existing_pid = read_lock_pid()
+  if existing_pid == vim.fn.getpid() then return true end
+  if existing_pid and is_process_running(existing_pid) then return false end
 
+  local parent = Path:new(lockfile_path):parent()
+  if not parent:exists() then parent:mkdir({ parents = true }) end
+
+  local tmp_lockfile = lockfile_path .. ".tmp." .. vim.fn.getpid()
   Path:new(tmp_lockfile):write(tostring(vim.fn.getpid()), "w")
 
-  if lockfile:exists() then
-    local content = lockfile:read()
-    local pid = tonumber(content)
-    if pid and is_process_running(pid) then
-      os.remove(tmp_lockfile)
-      return false
-    end
-  end
-
-  local success = os.rename(tmp_lockfile, lockfile_path)
-  if not success then
+  if not os.rename(tmp_lockfile, lockfile_path) then
     os.remove(tmp_lockfile)
     return false
   end
 
-  return true
+  -- os.rename is atomic, but two processes can both rename after the stale
+  -- check; only the one whose pid ended up in the lockfile owns it.
+  return read_lock_pid() == vim.fn.getpid()
 end
 
+-- Repeats and checks expiry each tick instead of firing once, so the timer
+-- re-arms itself after every refresh without depending on the manager check.
 local function setup_timer()
-  if M._refresh_timer then
-    M._refresh_timer:stop()
-    M._refresh_timer:close()
-  end
-
-  local now = math.floor(os.time())
-  local expires_at = M.state.openai_token and M.state.openai_token.expires_at or now
-  local time_until_expiry = math.max(0, expires_at - now)
-  local initial_interval = math.max(0, (time_until_expiry - 120) * 1000)
-  local repeat_interval = 0
+  if M._refresh_timer then return end
 
   M._refresh_timer = vim.uv.new_timer()
+  if not M._refresh_timer then return end
+
   M._refresh_timer:start(
-    initial_interval,
-    repeat_interval,
+    refresh_check_interval_ms,
+    refresh_check_interval_ms,
     vim.schedule_wrap(function()
-      if M._is_setup then M.refresh_token(true, true) end
+      if not M._is_setup or not M.state.openai_token then return end
+      local expires_at = M.state.openai_token.expires_at
+      if not expires_at or expires_at - math.floor(os.time()) > refresh_skew_sec then return end
+      M.refresh_token(true, true)
     end)
   )
 end
@@ -160,8 +161,8 @@ local function start_manager_check_timer()
 
   M._manager_check_timer = vim.uv.new_timer()
   M._manager_check_timer:start(
-    30000,
-    30000,
+    manager_check_interval_ms,
+    manager_check_interval_ms,
     vim.schedule_wrap(function()
       if not M._refresh_timer and try_acquire_timer_lock() then setup_timer() end
     end)
@@ -194,7 +195,7 @@ local function setup_token_management(provider)
 
   setup_file_watcher()
   start_manager_check_timer()
-  require("avante.tokenizers").setup(provider.tokenizer_id or "gpt-4o")
+  require("avante.tokenizers").setup((provider and provider.tokenizer_id) or "gpt-4o")
   vim.g.avante_login = true
 end
 
@@ -222,12 +223,26 @@ local function request_tokens(body)
   return tokens
 end
 
+local function generate_pkce()
+  local verifier, verifier_err = pkce.generate_verifier()
+  if not verifier then return nil, "Failed to generate PKCE verifier: " .. (verifier_err or "Unknown error") end
+
+  local challenge, challenge_err = pkce.generate_challenge(verifier)
+  if not challenge then return nil, "Failed to generate PKCE challenge: " .. (challenge_err or "Unknown error") end
+
+  return { verifier = verifier, challenge = challenge }, nil
+end
+
 ---@param provider AvanteProviderFunctor
 function M.setup(provider)
+  -- Inherited providers (e.g. openrouter via __inherited_from = "openai") reuse
+  -- the openai functor's setup; OpenAI auth only applies when openai is selected.
+  if Config.provider ~= "openai" then return end
+
   if not M.state then M.state = { openai_token = nil } end
 
   local provider_conf = Providers[Config.provider]
-  local auth_type = provider_conf.auth_type
+  local auth_type = provider_conf and provider_conf.auth_type
 
   if auth_type == "codex" then
     M.api_key_name = ""
@@ -250,33 +265,25 @@ function M.setup(provider)
     return
   end
 
-  if token and not is_valid_token(token) then
-    Utils.warn("OpenAI token data is corrupted or invalid, re-authenticating...", { title = "Avante" })
-    AuthStore.update("openai", nil)
-  end
+  -- No auth flow starts on launch; the user logs in explicitly via :AvanteLogin.
+  M._provider = provider
 
-  M.authenticate()
-  setup_token_management(provider)
-end
-
-function M.authenticate()
-  local verifier, verifier_err = pkce.generate_verifier()
-  if not verifier then
-    vim.schedule(
-      function()
-        vim.notify("Failed to generate PKCE verifier: " .. (verifier_err or "Unknown error"), vim.log.levels.ERROR)
-      end
+  if token then
+    Utils.warn(
+      "OpenAI token data is corrupted or invalid. Run :AvanteLogin to re-authenticate.",
+      { once = true, title = "Avante" }
     )
+    AuthStore.update("openai", nil)
     return
   end
 
-  local challenge, challenge_err = pkce.generate_challenge(verifier)
-  if not challenge then
-    vim.schedule(
-      function()
-        vim.notify("Failed to generate PKCE challenge: " .. (challenge_err or "Unknown error"), vim.log.levels.ERROR)
-      end
-    )
+  Utils.info("OpenAI Codex login required. Run :AvanteLogin to authenticate.", { once = true, title = "Avante" })
+end
+
+function M.authenticate()
+  local pair, pair_err = generate_pkce()
+  if not pair then
+    vim.schedule(function() vim.notify(pair_err, vim.log.levels.ERROR) end)
     return
   end
 
@@ -288,14 +295,14 @@ function M.authenticate()
     return
   end
 
-  local function build_auth_url(redirect_uri)
+  local function build_auth_url(auth_redirect_uri)
     return string.format(
       "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=%s&originator=avante",
       auth_endpoint,
       client_id,
-      vim.uri_encode(redirect_uri),
+      vim.uri_encode(auth_redirect_uri),
       vim.uri_encode("openid profile email offline_access"),
-      challenge,
+      pair.challenge,
       state
     )
   end
@@ -327,13 +334,13 @@ function M.authenticate()
     return code
   end
 
-  local function exchange_code(code, redirect_uri)
+  local function exchange_code(code, exchange_redirect_uri)
     local tokens, err = request_tokens({
       grant_type = "authorization_code",
       code = code,
-      redirect_uri = redirect_uri,
+      redirect_uri = exchange_redirect_uri,
       client_id = client_id,
-      code_verifier = verifier,
+      code_verifier = pair.verifier,
     })
 
     if not tokens then
@@ -342,11 +349,12 @@ function M.authenticate()
     end
 
     M.store_tokens(tokens)
-    vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
     M._is_setup = true
+    setup_token_management(M._provider)
+    vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
   end
 
-  local function prompt_manual_input(auth_url)
+  local function prompt_manual_input(exchange_redirect_uri)
     local Input = require("avante.ui.input")
     local input_config = Config.input or {}
     local input = Input:new({
@@ -361,58 +369,90 @@ function M.authenticate()
           vim.schedule(function() vim.notify(parse_err, vim.log.levels.ERROR) end)
           return
         end
-        exchange_code(code, "http://localhost:1455/auth/callback")
+        exchange_code(code, exchange_redirect_uri)
       end,
     })
     input:open()
-    if auth_url then
-      vim.schedule(
-        function() vim.notify("Open the copied URL, then paste the callback URL or code here.", vim.log.levels.INFO) end
+  end
+
+  -- Headless/remote flow: never spawn the callback server. The URL targets the
+  -- fixed localhost redirect URI, so the browser on the user's machine fails to
+  -- load the callback page but its address bar then holds the code to paste back.
+  local function run_headless(close)
+    OAuthServer.stop()
+
+    local auth_url = build_auth_url(redirect_uri)
+    local copied = pcall(vim.fn.setreg, "+", auth_url)
+    if not copied then pcall(vim.fn.setreg, "*", auth_url) end
+
+    vim.schedule(function()
+      vim.notify(
+        "Open this URL on your local machine (the callback page won't load, that's expected), "
+          .. "then paste the callback URL or code here",
+        vim.log.levels.INFO
       )
+    end)
+
+    OAuthUI.show_auth_url({
+      provider_name = "OpenAI Codex",
+      auth_url = auth_url,
+      disable_open = true,
+      on_copy = function(ctx)
+        ctx.close()
+        prompt_manual_input(redirect_uri)
+      end,
+      on_close = close,
+    })
+  end
+
+  local function run_browser(close)
+    local server_info = OAuthServer.start()
+    if not server_info then
+      vim.notify("Failed to start OAuth callback server, falling back to headless flow", vim.log.levels.WARN)
+      run_headless(close)
+      return
+    end
+
+    OAuthServer.wait_for_callback(state, function(code)
+      exchange_code(code, server_info.redirect_uri)
+      OAuthServer.stop()
+    end, function(error_msg)
+      OAuthServer.stop()
+      vim.schedule(
+        function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end
+      )
+    end)
+
+    local auth_url = build_auth_url(server_info.redirect_uri)
+    local ok, err = pcall(vim.ui.open, auth_url)
+    if ok then
+      vim.notify("Opened OpenAI login URL in browser", vim.log.levels.INFO)
+    else
+      OAuthServer.stop()
+      vim.notify(
+        "Could not open browser (" .. tostring(err) .. "). Falling back to headless flow.",
+        vim.log.levels.WARN
+      )
+      run_headless(close)
     end
   end
 
   vim.schedule(function()
-    OAuthUI.show_auth_url({
+    OAuthUI.select_method({
       provider_name = "OpenAI Codex",
-      auth_url = build_auth_url("http://localhost:1455/auth/callback"),
-      on_open = function(ctx)
-        local server_info = OAuthServer.start()
-        if not server_info then
-          vim.notify("Failed to start OAuth server", vim.log.levels.ERROR)
-          return
-        end
-
-        OAuthServer.wait_for_callback(state, function(code)
-          exchange_code(code, server_info.redirect_uri)
-          OAuthServer.stop()
-        end, function(error_msg)
-          OAuthServer.stop()
-          vim.schedule(
-            function() vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR) end
-          )
-        end)
-
-        local browser_url = build_auth_url(server_info.redirect_uri)
-        local ok, err = pcall(vim.ui.open, browser_url)
-        if ok then
-          vim.notify("Opened OpenAI login URL in browser", vim.log.levels.INFO)
-          ctx.close()
-        else
-          OAuthServer.stop()
-          vim.fn.setreg("+", browser_url)
-          vim.notify(
-            "Could not open browser (" .. tostring(err) .. "). URL copied to clipboard for manual flow.",
-            vim.log.levels.WARN
-          )
-          ctx.close()
-          prompt_manual_input(browser_url)
-        end
-      end,
-      on_copy = function(ctx)
-        ctx.close()
-        prompt_manual_input(ctx.copy_url)
-      end,
+      methods = {
+        {
+          id = "browser",
+          label = "OpenAI (browser)",
+          run = function(ctx) run_browser(ctx.close) end,
+        },
+        {
+          id = "headless",
+          label = "OpenAI (headless)",
+          headless = true,
+          run = function(ctx) run_headless(ctx.close) end,
+        },
+      },
     })
   end)
 end
@@ -426,7 +466,7 @@ function M.store_tokens(tokens)
   local json = {
     access_token = tokens.access_token,
     refresh_token = refresh_token,
-    expires_at = os.time() + (tokens.expires_in or 3600),
+    expires_at = os.time() + (tokens.expires_in or default_expires_in_sec),
     account_id = account_id,
   }
 
@@ -437,30 +477,30 @@ end
 
 ---@param async boolean|nil
 ---@param force boolean|nil
----@return boolean|nil
+---@return boolean
 function M.refresh_token(async, force)
   if not M.state or not M.state.openai_token then return false end
   async = async == nil and true or async
   force = force or false
 
-  if
-    not force
-    and M.state.openai_token
-    and M.state.openai_token.expires_at
-    and M.state.openai_token.expires_at > math.floor(os.time())
-  then
+  local token = M.state.openai_token
+  if not force and token.expires_at and token.expires_at - math.floor(os.time()) > refresh_skew_sec then
     return false
   end
 
-  if not M.state.openai_token.refresh_token then return false end
+  if not token.refresh_token then return false end
+  if M._refresh_in_flight then return false end
+  M._refresh_in_flight = true
 
   local body = {
     grant_type = "refresh_token",
-    refresh_token = M.state.openai_token.refresh_token,
+    refresh_token = token.refresh_token,
     client_id = client_id,
   }
 
   local function handle_response(response)
+    M._refresh_in_flight = false
+
     if response.status >= 400 then
       vim.schedule(
         function()
@@ -496,10 +536,10 @@ function M.refresh_token(async, force)
         callback = handle_response,
       }, curl_opts)
     )
-  else
-    local response = curl.post(token_endpoint, curl_opts)
-    return handle_response(response)
+    return true
   end
+
+  return handle_response(curl.post(token_endpoint, curl_opts))
 end
 
 function M.cleanup()
@@ -507,13 +547,6 @@ function M.cleanup()
     M._refresh_timer:stop()
     M._refresh_timer:close()
     M._refresh_timer = nil
-
-    local lockfile = Path:new(lockfile_path)
-    if lockfile:exists() then
-      local content = lockfile:read()
-      local pid = tonumber(content)
-      if pid and pid == vim.fn.getpid() then lockfile:rm() end
-    end
   end
 
   if M._manager_check_timer then
@@ -522,7 +555,12 @@ function M.cleanup()
     M._manager_check_timer = nil
   end
 
-  if M._file_watcher then M._file_watcher = nil end
+  M._file_watcher = nil
+
+  local pid = read_lock_pid()
+  if pid and pid == vim.fn.getpid() then
+    pcall(function() Path:new(lockfile_path):rm() end)
+  end
 
   OAuthServer.stop()
 end
@@ -540,7 +578,7 @@ function M.get_headers(provider_conf, provider)
   if M.is_oauth(provider_conf) then
     if not M._is_setup then M.setup(provider) end
     if not M.state or not M.state.openai_token then
-      Utils.error("OpenAI Codex authentication required. Please login and try again.")
+      Utils.error("OpenAI Codex authentication required. Run :AvanteLogin to login, then try again.")
       return nil
     end
 

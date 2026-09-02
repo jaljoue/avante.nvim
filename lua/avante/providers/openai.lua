@@ -25,11 +25,11 @@ M.role_map = {
 local codex_base_url = "https://chatgpt.com/backend-api/codex"
 local codex_endpoint = codex_base_url .. "/responses"
 local codex_model_ids = {
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
   "gpt-5.5",
-  "gpt-5.4",
   "gpt-5.3-codex",
-  "gpt-5.2-codex",
-  "gpt-5.2"
 }
 
 function M:is_disable_stream() return false end

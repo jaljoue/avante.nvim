@@ -32,6 +32,7 @@ M._is_setup = false
 M._refresh_timer = nil
 M._manager_check_timer = nil
 M._file_watcher = nil
+M._provider = nil
 
 ---@param token ClaudeAuthToken?
 ---@return boolean
@@ -141,16 +142,20 @@ local function setup_token_management(provider)
 
   setup_file_watcher()
   start_manager_check_timer()
-  require("avante.tokenizers").setup(provider.tokenizer_id)
+  require("avante.tokenizers").setup((provider and provider.tokenizer_id) or "gpt-4o")
   vim.g.avante_login = true
 end
 
 ---@param provider AvanteProviderFunctor
 function M.setup(provider)
+  -- Inherited providers reuse the claude functor's setup; Claude auth only
+  -- applies when claude is selected.
+  if Config.provider ~= "claude" then return end
+
   if not M.state then M.state = { claude_token = nil } end
 
   local provider_conf = P[Config.provider]
-  local auth_type = provider_conf.auth_type
+  local auth_type = provider_conf and provider_conf.auth_type
 
   if auth_type == "api" then
     M.api_key_name = "ANTHROPIC_API_KEY"
@@ -173,13 +178,19 @@ function M.setup(provider)
     return
   end
 
-  if token and not is_valid_token(token) then
-    Utils.warn("Claude token data is corrupted or invalid, re-authenticating...", { title = "Avante" })
+  -- No auth flow starts on launch; the user logs in explicitly via :AvanteLogin.
+  M._provider = provider
+
+  if token then
+    Utils.warn(
+      "Claude token data is corrupted or invalid. Run :AvanteLogin to re-authenticate.",
+      { once = true, title = "Avante" }
+    )
     AuthStore.update("claude", nil)
+    return
   end
 
-  M.authenticate()
-  setup_token_management(provider)
+  Utils.info("Claude login required. Run :AvanteLogin to authenticate.", { once = true, title = "Avante" })
 end
 
 function M.authenticate()
@@ -246,8 +257,9 @@ function M.authenticate()
     local ok, tokens = pcall(vim.json.decode, response.body)
     if ok then
       M.store_tokens(tokens)
-      vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
       M._is_setup = true
+      setup_token_management(M._provider)
+      vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
     else
       vim.schedule(function() vim.notify("Failed to decode JSON", vim.log.levels.ERROR) end)
     end
@@ -446,7 +458,7 @@ function M.get_headers(provider_conf, provider)
     M.refresh_token(false, false)
     local token = M.get_token()
     if not token or not token.access_token then
-      Utils.error("Claude Max authentication required. Please login and try again.")
+      Utils.error("Claude Max authentication required. Run :AvanteLogin to login, then try again.")
       return nil
     end
 
