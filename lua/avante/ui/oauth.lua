@@ -30,7 +30,7 @@ local function run_copy_callback(opts, provider_name, auth_url, open_url, copy_t
   })
 end
 
----@param opts { provider_name?: string, auth_url: string, open_url?: string, copy_url?: string, disable_open?: boolean, on_open?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_copy?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_close?: fun() }
+---@param opts { provider_name?: string, auth_url: string, open_url?: string, copy_url?: string, user_code?: string, disable_open?: boolean, keep_open?: boolean, on_open?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_copy?: fun(ctx: { provider_name: string, auth_url: string, open_url: string, copy_url: string, close: fun() }), on_close?: fun() }
 ---@return boolean
 function M.show_auth_url(opts)
   opts = opts or {}
@@ -38,7 +38,10 @@ function M.show_auth_url(opts)
   local auth_url = opts.auth_url
   local open_url = opts.open_url or auth_url
   local copy_target = opts.copy_url or auth_url
+  local user_code = opts.user_code
+  local has_code = type(user_code) == "string" and user_code ~= ""
   local disable_open = opts.disable_open == true
+  local keep_open = opts.keep_open == true
 
   if type(auth_url) ~= "string" or auth_url == "" then
     vim.notify("OAuth URL is missing", vim.log.levels.ERROR)
@@ -124,7 +127,7 @@ function M.show_auth_url(opts)
     close_popup()
   end
 
-  local function copy_action()
+  local function copy_url_action()
     local copied = copy_url(copy_target)
     if copied then
       vim.notify(string.format("Copied %s login URL to clipboard", provider_name), vim.log.levels.INFO)
@@ -143,23 +146,44 @@ function M.show_auth_url(opts)
       return
     end
 
-    close_popup()
+    if not keep_open then close_popup() end
+  end
+
+  local function copy_code_action()
+    if not has_code then
+      copy_url_action()
+      return
+    end
+
+    local copied = copy_url(user_code)
+    if copied then
+      vim.notify(string.format("Copied %s code to clipboard", provider_name), vim.log.levels.INFO)
+    else
+      vim.notify(string.format("Failed to copy %s code", provider_name), vim.log.levels.ERROR)
+    end
   end
 
   local lines = {
     "",
     string.format("  Authenticate %s", provider_name),
     "",
-    "  Choose an action:",
   }
   if not disable_open then table.insert(lines, "    [Enter]/[o] Open in browser") end
+  table.insert(lines, "    [u] Copy URL")
+  if has_code then table.insert(lines, "    [c]/[y] Copy code") end
+  if not keep_open then table.insert(lines, "    [q]/[Esc] Close") end
   vim.list_extend(lines, {
-    "    [c]/[y] Copy URL and continue manually",
-    "    [q]/[Esc] Close",
     "",
     "  Auth URL:",
     "  " .. auth_url,
   })
+  if has_code then
+    vim.list_extend(lines, {
+      "",
+      "  Code:",
+      "  " .. user_code,
+    })
+  end
 
   local preloaded = false
   if popup.bufnr and vim.api.nvim_buf_is_valid(popup.bufnr) then
@@ -188,10 +212,12 @@ function M.show_auth_url(opts)
     popup:map("n", "o", open_action, { noremap = true, silent = true })
     popup:map("n", "O", open_action, { noremap = true, silent = true })
   end
-  popup:map("n", "c", copy_action, { noremap = true, silent = true })
-  popup:map("n", "C", copy_action, { noremap = true, silent = true })
-  popup:map("n", "y", copy_action, { noremap = true, silent = true })
-  popup:map("n", "Y", copy_action, { noremap = true, silent = true })
+  popup:map("n", "u", copy_url_action, { noremap = true, silent = true })
+  popup:map("n", "U", copy_url_action, { noremap = true, silent = true })
+  popup:map("n", "c", copy_code_action, { noremap = true, silent = true })
+  popup:map("n", "C", copy_code_action, { noremap = true, silent = true })
+  popup:map("n", "y", copy_code_action, { noremap = true, silent = true })
+  popup:map("n", "Y", copy_code_action, { noremap = true, silent = true })
   popup:map("n", "q", close_popup, { noremap = true, silent = true })
   popup:map("n", "<Esc>", close_popup, { noremap = true, silent = true })
 

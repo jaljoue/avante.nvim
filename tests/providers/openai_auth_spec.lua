@@ -66,6 +66,10 @@ busted.describe("openai auth provider", function()
         return false
       end,
     }
+    package.loaded["avante.auth.pkce"] = {
+      generate_verifier = function() return "test_verifier", nil end,
+      generate_challenge = function(v) return "test_challenge", nil end,
+    }
     openai_auth = require("avante.auth.providers.openai")
     curl = require("plenary.curl")
   end)
@@ -221,5 +225,61 @@ busted.describe("openai auth provider", function()
 
   busted.it("does not treat chatgpt auth type as OAuth mode", function()
     assert.is_false(openai_auth.is_oauth({ auth_type = "chatgpt" }))
+  end)
+
+  async.it("authenticates via device code in headless session", function()
+    local run_device_code_called = false
+    local show_auth_url_called = false
+
+    package.loaded["avante.ui.oauth"] = {
+      show_auth_url = function(opts)
+        show_auth_url_called = true
+        return true
+      end,
+      select_method = function(opts)
+        for _, method in ipairs(opts.methods or {}) do
+          if method.headless then
+            method.run({ provider_name = opts.provider_name, close = function() end })
+            return true
+          end
+        end
+        return false
+      end,
+    }
+
+    openai_auth.authenticate()
+    async_util.util.sleep(100)
+
+    assert.is_true(show_auth_url_called)
+  end)
+
+  busted.it("includes device_code auth method", function()
+    local methods_table = {}
+    local original_select = vim.ui.select
+    vim.ui.select = function(_, _, on_choice) end_choice(nil) end
+
+    local mock_oauth = {
+      show_auth_url = function() end,
+      select_method = function(opts)
+        methods_table = opts.methods or {}
+        return true
+      end,
+    }
+    package.loaded["avante.ui.oauth"] = mock_oauth
+    package.loaded["avante.auth.providers.openai"] = nil
+    openai_auth = require("avante.auth.providers.openai")
+
+    openai_auth.authenticate()
+
+    vim.ui.select = original_select
+
+    local found_device_code = false
+    for _, method in ipairs(methods_table) do
+      if method.id == "device_code" and method.headless then
+        found_device_code = true
+        break
+      end
+    end
+    assert.is_true(found_device_code)
   end)
 end)

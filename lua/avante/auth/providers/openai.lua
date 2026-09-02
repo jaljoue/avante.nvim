@@ -21,7 +21,8 @@ local auth_issuer = "https://auth.openai.com"
 local auth_endpoint = auth_issuer .. "/oauth/authorize"
 local token_endpoint = auth_issuer .. "/oauth/token"
 local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
-local redirect_uri = "http://localhost:1455/auth/callback"
+local device_usercode_endpoint = auth_issuer .. "/api/accounts/deviceauth/usercode"
+local device_token_endpoint = auth_issuer .. "/api/accounts/deviceauth/token"
 local lockfile_path = vim.fn.stdpath("data") .. "/avante/openai-timer.lock"
 local refresh_skew_sec = 120
 local refresh_check_interval_ms = 60000
@@ -233,6 +234,69 @@ local function generate_pkce()
   return { verifier = verifier, challenge = challenge }, nil
 end
 
+local function request_device_code()
+  local response = curl.post(device_usercode_endpoint, {
+    body = string.format('{"client_id":"%s"}', client_id),
+    headers = { ["Content-Type"] = "application/json" },
+  })
+
+  if response.status >= 400 then return nil, "HTTP " .. response.status end
+
+  local ok, data = pcall(vim.json.decode, response.body)
+  if not ok then return nil, "Failed to decode response" end
+
+  return {
+    device_auth_id = data.device_auth_id,
+    user_code = data.user_code,
+    verification_uri = auth_issuer .. "/codex/device",
+    interval = data.interval or 5,
+  }
+end
+
+local function poll_for_token(device_auth_id, user_code, interval, expires_in, on_success, on_error)
+  local timer = vim.uv.new_timer()
+  if not timer then on_error("Failed to create timer") return end
+
+  local start_time = os.time()
+
+  timer:start(interval * 1000, interval * 1000, vim.schedule_wrap(function()
+    if os.time() - start_time >= expires_in then
+      timer:stop()
+      timer:close()
+      on_error("Device code expired")
+      return
+    end
+
+    local response = curl.post(device_token_endpoint, {
+      body = string.format('{"device_auth_id":"%s","user_code":"%s"}', device_auth_id, user_code),
+      headers = { ["Content-Type"] = "application/json" },
+    })
+
+    if response.status >= 400 then
+      if response.body:match("authorization_pending") then return end
+      timer:stop()
+      timer:close()
+      on_error("Authentication failed")
+      return
+    end
+
+    timer:stop()
+    timer:close()
+
+    local ok, tokens = pcall(vim.json.decode, response.body)
+    if ok then
+      on_success(tokens)
+    else
+      on_error("Failed to parse tokens")
+    end
+  end))
+
+  return function()
+    timer:stop()
+    timer:close()
+  end
+end
+
 ---@param provider AvanteProviderFunctor
 function M.setup(provider)
   -- Inherited providers (e.g. openrouter via __inherited_from = "openai") reuse
@@ -307,33 +371,6 @@ function M.authenticate()
     )
   end
 
-  local function parse_manual_code(input)
-    if not input then return nil, "Authorization input is empty" end
-    local value = vim.trim(input)
-    if value == "" then return nil, "Authorization input is empty" end
-
-    local code, input_state
-    if value:match("^https?://") then
-      code = value:match("[?&]code=([^&]+)")
-      input_state = value:match("[?&]state=([^&]+)")
-      if code then code = vim.uri_decode(code) end
-      if input_state then input_state = vim.uri_decode(input_state) end
-    elseif value:find("#", 1, true) then
-      local splits = vim.split(value, "#")
-      code = splits[1]
-      input_state = splits[2]
-    else
-      code = value
-    end
-
-    if not code or code == "" then return nil, "Failed to parse authorization code" end
-    if input_state and input_state ~= "" and input_state ~= state then
-      return nil, "State mismatch - potential CSRF attack"
-    end
-
-    return code
-  end
-
   local function exchange_code(code, exchange_redirect_uri)
     local tokens, err = request_tokens({
       grant_type = "authorization_code",
@@ -354,62 +391,70 @@ function M.authenticate()
     vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
   end
 
-  local function prompt_manual_input(exchange_redirect_uri)
-    local Input = require("avante.ui.input")
-    local input_config = Config.input or {}
-    local input = Input:new({
-      provider = input_config.provider,
-      title = "Enter Auth Code or Callback URL: ",
-      default = "",
-      conceal = false,
-      provider_opts = input_config.provider_opts,
-      on_submit = function(raw)
-        local code, parse_err = parse_manual_code(raw)
-        if not code then
-          vim.schedule(function() vim.notify(parse_err, vim.log.levels.ERROR) end)
-          return
-        end
-        exchange_code(code, exchange_redirect_uri)
-      end,
-    })
-    input:open()
-  end
-
-  -- Headless/remote flow: never spawn the callback server. The URL targets the
-  -- fixed localhost redirect URI, so the browser on the user's machine fails to
-  -- load the callback page but its address bar then holds the code to paste back.
-  local function run_headless(close)
+  local function run_device_code(close)
     OAuthServer.stop()
 
-    local auth_url = build_auth_url(redirect_uri)
-    local copied = pcall(vim.fn.setreg, "+", auth_url)
-    if not copied then pcall(vim.fn.setreg, "*", auth_url) end
+    local device_code, err = request_device_code()
+    if not device_code then
+      vim.schedule(function() vim.notify("Failed to request device code: " .. tostring(err), vim.log.levels.ERROR) end)
+      if close then close() end
+      return
+    end
 
-    vim.schedule(function()
-      vim.notify(
-        "Open this URL on your local machine (the callback page won't load, that's expected), "
-          .. "then paste the callback URL or code here",
-        vim.log.levels.INFO
-      )
-    end)
+    local function on_success(code_resp)
+      -- The device poll endpoint returns an authorization code plus a
+      -- server-generated PKCE pair, which must be exchanged at the regular
+      -- token endpoint using the device callback redirect URI.
+      local redirect_uri = auth_issuer .. "/deviceauth/callback"
+      local tokens, exchange_err = request_tokens({
+        grant_type = "authorization_code",
+        code = code_resp.authorization_code,
+        redirect_uri = redirect_uri,
+        client_id = client_id,
+        code_verifier = code_resp.code_verifier,
+      })
+
+      if not tokens then
+        vim.schedule(
+          function() vim.notify("Failed to exchange device code: " .. tostring(exchange_err), vim.log.levels.ERROR) end
+        )
+        return
+      end
+
+      M.store_tokens(tokens)
+      M._is_setup = true
+      setup_token_management(M._provider)
+      vim.schedule(function()
+        vim.notify("✓ Authentication successful!", vim.log.levels.INFO)
+      end)
+    end
+
+    local function on_error(error_msg)
+      vim.schedule(function()
+        vim.notify("Authentication failed: " .. tostring(error_msg), vim.log.levels.ERROR)
+      end)
+    end
+
+    local cancel_poll = poll_for_token(device_code.device_auth_id, device_code.user_code, device_code.interval, 900, on_success, on_error)
 
     OAuthUI.show_auth_url({
       provider_name = "OpenAI Codex",
-      auth_url = auth_url,
+      auth_url = device_code.verification_uri,
+      user_code = device_code.user_code,
       disable_open = true,
-      on_copy = function(ctx)
-        ctx.close()
-        prompt_manual_input(redirect_uri)
+      keep_open = true,
+      on_close = function()
+        cancel_poll()
+        if close then close() end
       end,
-      on_close = close,
     })
   end
 
   local function run_browser(close)
     local server_info = OAuthServer.start()
     if not server_info then
-      vim.notify("Failed to start OAuth callback server, falling back to headless flow", vim.log.levels.WARN)
-      run_headless(close)
+      vim.notify("Failed to start OAuth callback server, falling back to device code auth", vim.log.levels.WARN)
+      run_device_code(close)
       return
     end
 
@@ -430,10 +475,10 @@ function M.authenticate()
     else
       OAuthServer.stop()
       vim.notify(
-        "Could not open browser (" .. tostring(err) .. "). Falling back to headless flow.",
+        "Could not open browser (" .. tostring(err) .. "). Falling back to device code auth.",
         vim.log.levels.WARN
       )
-      run_headless(close)
+      run_device_code(close)
     end
   end
 
@@ -447,10 +492,10 @@ function M.authenticate()
           run = function(ctx) run_browser(ctx.close) end,
         },
         {
-          id = "headless",
-          label = "OpenAI (headless)",
+          id = "device_code",
+          label = "OpenAI (remote)",
           headless = true,
-          run = function(ctx) run_headless(ctx.close) end,
+          run = function(ctx) run_device_code(ctx.close) end,
         },
       },
     })

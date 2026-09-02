@@ -882,35 +882,36 @@ Here's a complete blink.cmp configuration example with all Avante sources:
 
 ## Usage
 
-### Using Claude Pro/Max Subscription
-To login with your Claude subscription, set the **auth_type** of the Claude provider entry in your config to "max", re-open Neovim then the authentication process will start in your browser. Once logged in and authorized, a code will show that needs to be copied into the prompt in Neovim, which should then give access to use your subscription with Avante. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
+### Authentication
 
-You may need to run `AvanteSwitchProvider claude` to initiate the authentication if you previously had a different provider selected.
+To authenticate with providers that support subscription-based login:
+
+1. Set `auth_type = "max"` or `auth_type = "codex"` in your provider config
+2. Run `:AvanteLogin` to initiate authentication
+3. Follow the on-screen prompts to complete the flow
 
 ```lua
--- Providers = { ...
-
+providers = {
   claude = {
-    -- ...
     auth_type = "max",
   },
-
-```
-
-### Using Codex Subscription
-To login with your Codex subscription, set the **auth_type** of the OpenAI provider entry in your config to "codex", re-open Neovim then the authentication process will start in your browser and return automatically after authorization. Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
-
-You may need to run `AvanteSwitchProvider openai` to initiate the authentication if you previously had a different provider selected.
-
-```lua
--- Providers = { ...
-
   openai = {
-    -- ...
     auth_type = "codex",
   },
-
+}
 ```
+
+Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
+
+### Claude Pro/Max (`auth_type = "max"`)
+
+Opens a browser window with the login URL. After authorizing, copy the authorization code from the browser and paste it into Neovim to complete the flow.
+
+### OpenAI Codex (`auth_type = "codex"`)
+
+Provides two authentication methods:
+- **Browser**: Standard OAuth flow with automatic callback server
+- **Remote**: Device code authentication that polls for completion (auto-selected in headless environments)
 
 ### Basic Functionality
 
