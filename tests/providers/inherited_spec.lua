@@ -22,7 +22,7 @@ busted.describe("inherited providers", function()
   end)
 
   busted.it("does not inherit auth_type from the base provider config", function()
-    Config.providers.openai = { auth_type = "codex" }
+    Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_a = {
       __inherited_from = "openai",
       api_key_name = "MY_KEY",
@@ -35,19 +35,19 @@ busted.describe("inherited providers", function()
   end)
 
   busted.it("respects an explicit auth_type on the inherited provider", function()
-    Config.providers.openai = { auth_type = "codex" }
+    Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_b = {
       __inherited_from = "openai",
-      auth_type = "codex",
+      auth_type = "chatgpt",
     }
 
     local functor = Providers.my_inherited_b
 
-    assert.equals("codex", functor.auth_type)
+    assert.equals("chatgpt", functor.auth_type)
   end)
 
   busted.it("installs a generic setup instead of the base module setup", function()
-    Config.providers.openai = { auth_type = "codex" }
+    Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_c = {
       __inherited_from = "openai",
       api_key_name = "MY_KEY",

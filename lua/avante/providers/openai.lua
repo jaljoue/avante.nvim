@@ -9,7 +9,7 @@ local LlmTools = require("avante.llm_tools")
 local OpenAIAuth = require("avante.auth.providers.openai")
 
 ---@class AvanteOpenAIProvider : AvanteDefaultBaseProvider
----@field auth_type "api" | "codex"
+---@field auth_type "api" | "chatgpt"
 
 ---@class AvanteProviderFunctor
 local M = {}
@@ -21,8 +21,13 @@ M.role_map = {
   assistant = "assistant",
 }
 
-local codex_base_url = "https://chatgpt.com/backend-api/codex"
-local codex_endpoint = codex_base_url .. "/responses"
+-- Sign in with ChatGPT tokens are issued for the OpenAI API resource, so the
+-- configured endpoint is not used for them.
+local chatgpt_endpoint = "https://api.openai.com/v1/responses"
+-- Legacy Codex CLI tokens (device code login) only work against the ChatGPT backend.
+local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
+local chatgpt_usage_limit_code = "subscription_sharing_usage_limit_exceeded"
+local chatgpt_usage_url = "https://chatgpt.com/settings/usage"
 local codex_model_ids = {
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -36,7 +41,7 @@ function M:is_disable_stream() return false end
 local function is_codex_model_id(model) return model ~= nil and vim.tbl_contains(codex_model_ids, model) end
 
 local function resolve_codex_model(provider_conf)
-  if provider_conf.auth_type ~= "codex" then return provider_conf.model end
+  if provider_conf.auth_type ~= "chatgpt" then return provider_conf.model end
   if is_codex_model_id(provider_conf.model) then return provider_conf.model end
   local fallback = codex_model_ids[1]
   if provider_conf.model and provider_conf.model ~= "" then
@@ -71,6 +76,20 @@ function M:transform_tool(tool)
   return res
 end
 
+-- Sign in with ChatGPT shares the subscription's usage limit with other apps. It
+-- resets after hours rather than seconds, so it is reported instead of retried.
+---@param err string|table|nil HTTP error body, or a decoded error object from the stream
+---@return string|nil
+function M:get_usage_limit_error(err)
+  if type(err) == "string" then
+    local ok, decoded = pcall(vim.json.decode, err)
+    err = ok and type(decoded) == "table" and decoded.error or nil
+  end
+  if type(err) ~= "table" or err.code ~= chatgpt_usage_limit_code then return nil end
+  local detail = type(err.message) == "string" and err.message or "Usage limit reached."
+  return string.format("%s: %s\nCheck your ChatGPT usage: %s", chatgpt_usage_limit_code, detail, chatgpt_usage_url)
+end
+
 ---Check if url belongs to openrouter
 ---@return boolean
 function M.is_openrouter(url) return url:match("^https://openrouter%.ai/") end
@@ -93,7 +112,7 @@ function M:list_models(timeout)
 
   local provider_conf = Providers.parse_config(self)
 
-  if provider_conf.auth_type == "codex" then
+  if provider_conf.auth_type == "chatgpt" then
     return vim
         .iter(codex_model_ids)
         :map(function(model_id)
@@ -276,9 +295,9 @@ function M:parse_messages(opts)
       -- Check if this is a reasoning message (object with type "reasoning")
       if msg.content.type == "reasoning" then
         -- Avoid re-sending response-item IDs unless explicitly allowed.
-        -- For codex auth, items are not persisted (store=false) so referencing
+        -- For ChatGPT auth, items are not persisted (store=false) so referencing
         -- them by id is invalid. Skip reasoning items entirely.
-        if allow_reasoning_input and provider_conf.auth_type ~= "codex" then
+        if allow_reasoning_input then
           table.insert(messages, {
             type = "reasoning",
             id = msg.content.id,
@@ -785,9 +804,9 @@ function M:parse_response(ctx, data_stream, _, opts)
       else
         opts.on_stop({ reason = "complete", usage = usage })
       end
-    elseif jsn.type == "error" then
-      -- Error event
-      local error_msg = jsn.error and vim.inspect(jsn.error) or "Unknown error"
+    elseif jsn.type == "error" or jsn.type == "response.failed" then
+      local err = jsn.error or (jsn.response and jsn.response.error) or (jsn.code and jsn)
+      local error_msg = self:get_usage_limit_error(err) or (err and vim.inspect(err)) or "Unknown error"
       opts.on_stop({ reason = "error", error = error_msg })
     end
     return
@@ -932,7 +951,7 @@ function M:parse_curl_args(prompt_opts)
   end
 
   local use_response_api = Providers.resolve_use_response_api(provider_conf, prompt_opts)
-  if auth_type == "codex" then
+  if auth_type == "chatgpt" then
     provider_conf.use_response_api = true
     use_response_api = true
   end
@@ -941,7 +960,7 @@ function M:parse_curl_args(prompt_opts)
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
   local session_ctx = prompt_opts.session_ctx
   local supports_previous_response_id = provider_conf.support_previous_response_id == true
-  if auth_type == "codex" then supports_previous_response_id = false end
+  if auth_type == "chatgpt" then supports_previous_response_id = false end
 
   if session_ctx and session_ctx.last_response_model then
     if session_ctx.last_response_model ~= provider_conf.model or session_ctx.last_response_auth_type ~= auth_type then
@@ -982,10 +1001,10 @@ function M:parse_curl_args(prompt_opts)
 
   -- Determine endpoint path based on use_response_api
   local endpoint_path = use_response_api and "/responses" or "/chat/completions"
-  if auth_type == "codex" then endpoint_path = "/responses" end
+  if auth_type == "chatgpt" then endpoint_path = "/responses" end
 
   local original_use_response_api = self.use_response_api
-  if auth_type == "codex" then self.use_response_api = true end
+  if auth_type == "chatgpt" then self.use_response_api = true end
   local has_function_outputs = false
   if use_response_api and prompt_opts.messages then
     for _, msg in ipairs(prompt_opts.messages) do
@@ -1012,10 +1031,11 @@ function M:parse_curl_args(prompt_opts)
     prompt_opts.force_include_tool_calls = true
   end
   local parsed_messages = self:parse_messages(prompt_opts)
-  if auth_type == "codex" then self.use_response_api = original_use_response_api end
+  if auth_type == "chatgpt" then self.use_response_api = original_use_response_api end
 
+  local codex_backend = auth_type == "chatgpt" and OpenAIAuth.uses_codex_backend()
   local codex_instructions = nil
-  if auth_type == "codex" then
+  if codex_backend then
     local filtered_messages = {}
     for _, message in ipairs(parsed_messages) do
       if message.role == "system" or message.role == "developer" then
@@ -1085,12 +1105,17 @@ function M:parse_curl_args(prompt_opts)
     } or nil
   end
 
-  -- Adjustments for codex login
-  if auth_type == "codex" then
+  -- Adjustments for ChatGPT subscription login
+  if auth_type == "chatgpt" then
     request_body.store = false
     request_body.messages = nil
     request_body.input = nil
+    -- Subscription tokens reject these request fields.
     request_body.max_output_tokens = nil
+    request_body.temperature = nil
+    request_body.prompt_cache_retention = nil
+  end
+  if codex_backend then
     local instructions = codex_instructions or prompt_opts.system_prompt
     if instructions and instructions ~= "" then
       request_body.instructions = instructions
@@ -1100,9 +1125,7 @@ function M:parse_curl_args(prompt_opts)
   end
 
   local url = Utils.url_join(provider_conf.endpoint, endpoint_path)
-  if auth_type == "codex" and (endpoint_path == "/responses" or endpoint_path == "/chat/completions") then
-    url = codex_endpoint
-  end
+  if auth_type == "chatgpt" then url = codex_backend and codex_endpoint or chatgpt_endpoint end
 
   return {
     url = url,

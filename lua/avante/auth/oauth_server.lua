@@ -179,7 +179,7 @@ local function handle_request(client, request)
 
     local on_success = pending.on_success
     pending = nil
-    if on_success then vim.schedule(function() on_success(code) end) end
+    if on_success then vim.schedule(function() on_success(code, params) end) end
 
     respond(client, 200, HTML_SUCCESS)
     return
@@ -227,15 +227,17 @@ local function on_connection(err)
   end)
 end
 
+local REDIRECT_URI = "http://127.0.0.1:" .. PORT .. "/auth/callback"
+
 function M.start()
-  if server then return { port = PORT, redirect_uri = "http://localhost:" .. PORT .. "/auth/callback" } end
+  if server then return { port = PORT, redirect_uri = REDIRECT_URI } end
 
   server = uv.new_tcp()
   if not server then return nil end
   server:bind("127.0.0.1", PORT)
   server:listen(128, on_connection)
 
-  return { port = PORT, redirect_uri = "http://localhost:" .. PORT .. "/auth/callback" }
+  return { port = PORT, redirect_uri = REDIRECT_URI }
 end
 
 function M.stop()
@@ -266,12 +268,12 @@ function M.wait_for_callback(state, on_success, on_error)
 
   pending = {
     state = state,
-    on_success = function(code)
+    on_success = function(code, params)
       if timeout then
         timeout:stop()
         timeout:close()
       end
-      if on_success then on_success(code) end
+      if on_success then on_success(code, params) end
     end,
     on_error = function(error_msg)
       if timeout then
