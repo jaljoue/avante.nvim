@@ -28,7 +28,16 @@ local chatgpt_endpoint = "https://api.openai.com/v1/responses"
 local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
 local chatgpt_usage_limit_code = "subscription_sharing_usage_limit_exceeded"
 local chatgpt_usage_url = "https://chatgpt.com/settings/usage"
-local codex_model_ids = {
+-- Like the Codex CLI, the model catalog is read from the Codex backend for both
+-- token kinds. It hides models that need a newer client, so keep the version
+-- close to the latest Codex CLI release.
+local codex_models_endpoint = "https://chatgpt.com/backend-api/codex/models"
+local codex_client_version = "0.159.3"
+-- Used until the catalog is fetched, or when it can't be.
+local fallback_model_ids = {
+  "gpt-6.1-sol",
+  "gpt-6-astra",
+  "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -38,15 +47,74 @@ local codex_model_ids = {
 
 function M:is_disable_stream() return false end
 
-local function is_codex_model_id(model) return model ~= nil and vim.tbl_contains(codex_model_ids, model) end
+local function chatgpt_model_entry(model_id)
+  return { id = model_id, name = "chatgpt/" .. model_id, display_name = "chatgpt/" .. model_id }
+end
 
-local function resolve_codex_model(provider_conf)
+---@param provider_conf table
+---@param provider AvanteProviderFunctor
+---@return AvanteProviderModelList models
+---@return boolean cacheable false when not signed in, so the catalog is fetched after login
+local function fetch_chatgpt_models(provider_conf, provider)
+  local fallback = vim.tbl_map(chatgpt_model_entry, fallback_model_ids)
+  local headers = OpenAIAuth.get_headers(provider_conf, provider)
+  if not headers then return fallback, false end
+
+  local curl = require("plenary.curl")
+  local ok, response = pcall(curl.get, codex_models_endpoint .. "?client_version=" .. codex_client_version, {
+    headers = Utils.tbl_override(headers, { ["Accept"] = "application/json" }),
+    proxy = provider_conf.proxy,
+    insecure = provider_conf.allow_insecure,
+    timeout = provider_conf.timeout,
+  })
+  if not ok or response.status ~= 200 then
+    local reason = ok and ("HTTP " .. response.status) or tostring(response)
+    Utils.warn("Failed to fetch ChatGPT models (" .. reason .. "), using the built-in list", { title = "Avante" })
+    return fallback, true
+  end
+
+  local decoded, body = pcall(vim.json.decode, response.body)
+  if not decoded or type(body) ~= "table" or type(body.models) ~= "table" then
+    Utils.warn("Failed to parse the ChatGPT model list, using the built-in list", { title = "Avante" })
+    return fallback, true
+  end
+
+  -- Same filtering as the Codex picker: listed models in priority order, and
+  -- only API-supported ones unless the token is for the Codex backend.
+  local codex_backend = OpenAIAuth.uses_codex_backend()
+  local models = vim
+    .iter(body.models)
+    :filter(
+      function(model)
+        return type(model) == "table"
+          and type(model.slug) == "string"
+          and model.visibility == "list"
+          and (codex_backend or model.supported_in_api == true)
+      end
+    )
+    :totable()
+  if #models == 0 then return fallback, true end
+  table.sort(models, function(a, b) return (tonumber(a.priority) or 0) < (tonumber(b.priority) or 0) end)
+  return vim.tbl_map(function(model) return chatgpt_model_entry(model.slug) end, models), true
+end
+
+---@param provider AvanteProviderFunctor
+---@param provider_conf table
+local function resolve_chatgpt_model(provider, provider_conf)
   if provider_conf.auth_type ~= "chatgpt" then return provider_conf.model end
-  if is_codex_model_id(provider_conf.model) then return provider_conf.model end
-  local fallback = codex_model_ids[1]
-  if provider_conf.model and provider_conf.model ~= "" then
+  local model = provider_conf.model
+  local models = provider._model_list_cache
+  -- Fetch the catalog for models outside the fallback list, so a model picked in
+  -- an earlier session works without opening the model selector first.
+  if not models and not vim.tbl_contains(fallback_model_ids, model) and OpenAIAuth.get_token() then
+    models = provider:list_models()
+  end
+  local model_ids = models and vim.tbl_map(function(entry) return entry.id end, models) or fallback_model_ids
+  if vim.tbl_contains(model_ids, model) then return model end
+  local fallback = model_ids[1] or fallback_model_ids[1]
+  if model and model ~= "" then
     Utils.warn(
-      "OpenAI Codex mode supports only " .. table.concat(codex_model_ids, ", ") .. "; using " .. fallback,
+      model .. " is not available with ChatGPT sign in; using " .. fallback,
       { once = true, title = "Avante" }
     )
   end
@@ -113,13 +181,9 @@ function M:list_models(timeout)
   local provider_conf = Providers.parse_config(self)
 
   if provider_conf.auth_type == "chatgpt" then
-    return vim
-        .iter(codex_model_ids)
-        :map(function(model_id)
-          local prefixed_model_id = "codex/" .. model_id
-          return { id = prefixed_model_id, name = prefixed_model_id, display_name = prefixed_model_id }
-        end)
-        :totable()
+    local models, cacheable = fetch_chatgpt_models(provider_conf, self)
+    if cacheable then self._model_list_cache = models end
+    return models
   end
 
   if not provider_conf.endpoint then
@@ -264,7 +328,7 @@ function M.cleanup_openai() return OpenAIAuth.cleanup() end
 function M:parse_messages(opts)
   local messages = {}
   local provider_conf, _ = Providers.parse_config(self)
-  provider_conf.model = resolve_codex_model(provider_conf)
+  provider_conf.model = resolve_chatgpt_model(self, provider_conf)
   local use_response_api = Providers.resolve_use_response_api(provider_conf, opts)
   local pending_reasoning_content = nil
   if provider_conf.auth_type == "chatgpt" then use_response_api = true end
@@ -930,7 +994,7 @@ end
 function M:parse_curl_args(prompt_opts)
   local provider_conf, request_body = Providers.parse_config(self)
   ---@cast provider_conf AvanteOpenAIProvider
-  provider_conf.model = resolve_codex_model(provider_conf)
+  provider_conf.model = resolve_chatgpt_model(self, provider_conf)
   local disable_tools = provider_conf.disable_tools or false
 
   local headers = {
