@@ -514,7 +514,7 @@ _See [config.lua#L9](./lua/avante/config.lua) for the up to date full default co
   providers = {
     openai = {
       endpoint = "https://api.openai.com/v1",
-      auth_type = "api", -- Set to "codex" to sign in with a Codex subscription
+      auth_type = "api", -- Set to "chatgpt" to sign in with a ChatGPT subscription
       model = "gpt-4o",
     },
     claude = {
@@ -897,7 +897,7 @@ Here's a complete blink.cmp configuration example with all Avante sources:
 
 To authenticate with providers that support subscription-based login:
 
-1. Set `auth_type = "max"` or `auth_type = "codex"` in your provider config
+1. Set `auth_type = "max"` or `auth_type = "chatgpt"` in your provider config
 2. Run `:AvanteLogin` to initiate authentication
 3. Follow the on-screen prompts to complete the flow
 
@@ -907,7 +907,7 @@ providers = {
     auth_type = "max",
   },
   openai = {
-    auth_type = "codex",
+    auth_type = "chatgpt",
   },
 }
 ```
@@ -918,11 +918,11 @@ Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
 
 Opens a browser window with the login URL. After authorizing, copy the authorization code from the browser and paste it into Neovim to complete the flow.
 
-### OpenAI Codex (`auth_type = "codex"`)
+### OpenAI ChatGPT subscription (`auth_type = "chatgpt"`)
 
 Provides two authentication methods:
-- **Browser**: Standard OAuth flow with automatic callback server
-- **Remote**: Device code authentication that polls for completion (auto-selected in headless environments)
+- **Browser**: Sign in with ChatGPT. Registers Avante as a client on your ChatGPT account and sends requests to the OpenAI API (`https://api.openai.com/v1/responses`) using your subscription's usage limits. Requires port 1455 to be free for the callback.
+- **Remote**: Codex device code authentication that polls for completion (auto-selected in headless environments). Requests are sent to the ChatGPT Codex backend.
 
 ### Basic Functionality
 

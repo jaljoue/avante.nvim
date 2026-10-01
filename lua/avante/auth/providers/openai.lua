@@ -12,13 +12,28 @@ local curl = require("plenary.curl")
 ---@field access_token string
 ---@field refresh_token string
 ---@field expires_at integer
+---@field client_id string|nil Issued client ID for Sign in with ChatGPT tokens; nil for legacy Codex tokens
+---@field scopes string[]|nil
 ---@field account_id string|nil
 
 ---@class AvanteAuthProvider
 local M = {}
 
 local auth_issuer = "https://auth.openai.com"
-local auth_endpoint = auth_issuer .. "/oauth/authorize"
+
+-- Sign in with ChatGPT: every login registers a new public client, and OpenAI
+-- returns the issued client ID in the callback. The resulting token is sent
+-- directly to the OpenAI API.
+local chatgpt_authorize_endpoint = auth_issuer .. "/api/accounts/authorize"
+local chatgpt_token_endpoint = auth_issuer .. "/api/accounts/oauth/token"
+local dynamic_client_id = "dynamic_agent_client"
+local agent_name_hint = "Avante"
+local chatgpt_resource = "https://api.openai.com/v1"
+local direct_token_scope = "chatgpt.tokens.use.direct"
+local chatgpt_scope = "openid profile email offline_access resource.invoke " .. direct_token_scope
+local device_id_path = vim.fn.stdpath("data") .. "/avante/device_id"
+
+-- Legacy Codex CLI client, still used by the device code flow for remote sessions.
 local token_endpoint = auth_issuer .. "/oauth/token"
 local client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
 local device_usercode_endpoint = auth_issuer .. "/api/accounts/deviceauth/usercode"
@@ -51,6 +66,46 @@ local function is_valid_token(token)
     and type(token.expires_at) == "number"
     and token.access_token ~= ""
     and token.refresh_token ~= ""
+end
+
+local function is_chatgpt_token(token)
+  return token ~= nil and type(token.client_id) == "string" and token.client_id ~= ""
+end
+
+-- OpenAI identifies each installation ("agent host") by a stable UUID. It is kept
+-- apart from auth.json so logging out does not register a new host.
+local function get_or_create_device_id()
+  local ok, existing = pcall(function() return vim.trim(Path:new(device_id_path):read()) end)
+  if ok and existing:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") then
+    return existing:lower()
+  end
+
+  local bytes, err = pkce.random_bytes(16)
+  if not bytes then return nil, err end
+  local b = { bytes:byte(1, 16) }
+  b[7] = bit.bor(bit.band(b[7], 0x0f), 0x40)
+  b[9] = bit.bor(bit.band(b[9], 0x3f), 0x80)
+  local hex = string.format(string.rep("%02x", 16), unpack(b))
+  local uuid =
+    string.format("%s-%s-%s-%s-%s", hex:sub(1, 8), hex:sub(9, 12), hex:sub(13, 16), hex:sub(17, 20), hex:sub(21))
+
+  local parent = Path:new(device_id_path):parent()
+  if not parent:exists() then parent:mkdir({ parents = true }) end
+  Path:new(device_id_path):write(uuid, "w")
+  return uuid
+end
+
+---@return string[]|nil scopes
+---@return string|nil error
+local function granted_scopes(tokens)
+  if type(tokens.scope) ~= "string" or vim.trim(tokens.scope) == "" then
+    return nil, "Token response has invalid scope"
+  end
+  local scopes = vim.split(vim.trim(tokens.scope), "%s+")
+  if not vim.tbl_contains(scopes, direct_token_scope) then
+    return nil, "OpenAI OAuth grant did not include " .. direct_token_scope
+  end
+  return scopes
 end
 
 local function base64url_decode(data)
@@ -202,16 +257,21 @@ end
 
 local function encode_form(params)
   local parts = {}
+  -- rfc2396 escapes "+", "=", "&", ":" and "/", which the default rfc3986 mode leaves as-is.
   for key, value in pairs(params) do
-    table.insert(parts, string.format("%s=%s", vim.uri_encode(key), vim.uri_encode(tostring(value))))
+    table.insert(
+      parts,
+      string.format("%s=%s", vim.uri_encode(key, "rfc2396"), vim.uri_encode(tostring(value), "rfc2396"))
+    )
   end
   return table.concat(parts, "&")
 end
 
-local function request_tokens(body)
-  local response = curl.post(token_endpoint, {
+local function request_tokens(body, endpoint)
+  local response = curl.post(endpoint or token_endpoint, {
     body = encode_form(body),
     headers = {
+      ["Accept"] = "application/json",
       ["Content-Type"] = "application/x-www-form-urlencoded",
     },
   })
@@ -308,7 +368,7 @@ function M.setup(provider)
   local provider_conf = Providers[Config.provider]
   local auth_type = provider_conf and provider_conf.auth_type
 
-  if auth_type == "codex" then
+  if auth_type == "chatgpt" then
     M.api_key_name = ""
     provider.api_key_name = ""
   else
@@ -341,7 +401,7 @@ function M.setup(provider)
     return
   end
 
-  Utils.info("OpenAI Codex login required. Run :AvanteLogin to authenticate.", { once = true, title = "Avante" })
+  Utils.info("OpenAI login required. Run :AvanteLogin to authenticate.", { once = true, title = "Avante" })
 end
 
 function M.authenticate()
@@ -359,33 +419,48 @@ function M.authenticate()
     return
   end
 
-  local function build_auth_url(auth_redirect_uri)
-    return string.format(
-      "%s?client_id=%s&response_type=code&redirect_uri=%s&scope=%s&code_challenge=%s&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state=%s&originator=avante",
-      auth_endpoint,
-      client_id,
-      vim.uri_encode(auth_redirect_uri),
-      vim.uri_encode("openid profile email offline_access"),
-      pair.challenge,
-      state
-    )
+  local function build_auth_url(auth_redirect_uri, device_id, nonce)
+    return chatgpt_authorize_endpoint
+      .. "?"
+      .. encode_form({
+        client_id = dynamic_client_id,
+        agent_name_hint = agent_name_hint,
+        ext_agent_host_id = "urn:uuid:" .. device_id,
+        response_type = "code",
+        redirect_uri = auth_redirect_uri,
+        resource = chatgpt_resource,
+        scope = chatgpt_scope,
+        state = state,
+        code_challenge = pair.challenge,
+        code_challenge_method = "S256",
+        nonce = nonce,
+      })
   end
 
-  local function exchange_code(code, exchange_redirect_uri)
-    local tokens, err = request_tokens({
-      grant_type = "authorization_code",
-      code = code,
-      redirect_uri = exchange_redirect_uri,
-      client_id = client_id,
-      code_verifier = pair.verifier,
-    })
-
-    if not tokens then
+  local function exchange_code(code, issued_client_id, exchange_redirect_uri)
+    local function fail(err)
       vim.schedule(function() vim.notify("Failed to exchange code: " .. tostring(err), vim.log.levels.ERROR) end)
-      return
     end
 
-    M.store_tokens(tokens)
+    local tokens, err = request_tokens({
+      grant_type = "authorization_code",
+      client_id = issued_client_id,
+      code = code,
+      code_verifier = pair.verifier,
+      redirect_uri = exchange_redirect_uri,
+      resource = chatgpt_resource,
+    }, chatgpt_token_endpoint)
+    if not tokens then return fail(err) end
+    if type(tokens.id_token) ~= "string" or tokens.id_token == "" then
+      return fail("Token response did not contain an ID token")
+    end
+    if type(tokens.refresh_token) ~= "string" or tokens.refresh_token == "" then
+      return fail("Token response did not contain a refresh token")
+    end
+    local scopes, scope_err = granted_scopes(tokens)
+    if not scopes then return fail(scope_err) end
+
+    M.store_tokens(tokens, { client_id = issued_client_id, scopes = scopes })
     M._is_setup = true
     setup_token_management(M._provider)
     vim.schedule(function() vim.notify("✓ Authentication successful!", vim.log.levels.INFO) end)
@@ -451,6 +526,18 @@ function M.authenticate()
   end
 
   local function run_browser(close)
+    local device_id, device_err = get_or_create_device_id()
+    if not device_id then
+      vim.notify("Failed to create device ID: " .. tostring(device_err), vim.log.levels.ERROR)
+      return
+    end
+
+    local nonce, nonce_err = pkce.generate_verifier()
+    if not nonce then
+      vim.notify("Failed to generate OAuth nonce: " .. tostring(nonce_err), vim.log.levels.ERROR)
+      return
+    end
+
     local server_info = OAuthServer.start()
     if not server_info then
       vim.notify("Failed to start OAuth callback server, falling back to device code auth", vim.log.levels.WARN)
@@ -458,9 +545,14 @@ function M.authenticate()
       return
     end
 
-    OAuthServer.wait_for_callback(state, function(code)
-      exchange_code(code, server_info.redirect_uri)
+    OAuthServer.wait_for_callback(state, function(code, params)
       OAuthServer.stop()
+      local issued_client_id = params and params.client_id and vim.trim(params.client_id)
+      if not issued_client_id or issued_client_id == "" then
+        vim.notify("Authentication failed: OpenAI callback did not contain an issued client ID", vim.log.levels.ERROR)
+        return
+      end
+      exchange_code(code, issued_client_id, server_info.redirect_uri)
     end, function(error_msg)
       OAuthServer.stop()
       vim.schedule(
@@ -468,7 +560,7 @@ function M.authenticate()
       )
     end)
 
-    local auth_url = build_auth_url(server_info.redirect_uri)
+    local auth_url = build_auth_url(server_info.redirect_uri, device_id, nonce)
     local ok, err = pcall(vim.ui.open, auth_url)
     if ok then
       vim.notify("Opened OpenAI login URL in browser", vim.log.levels.INFO)
@@ -484,16 +576,16 @@ function M.authenticate()
 
   vim.schedule(function()
     OAuthUI.select_method({
-      provider_name = "OpenAI Codex",
+      provider_name = "OpenAI",
       methods = {
         {
           id = "browser",
-          label = "OpenAI (browser)",
+          label = "Sign in with ChatGPT (browser)",
           run = function(ctx) run_browser(ctx.close) end,
         },
         {
           id = "device_code",
-          label = "OpenAI (remote)",
+          label = "OpenAI Codex (remote)",
           headless = true,
           run = function(ctx) run_device_code(ctx.close) end,
         },
@@ -503,17 +595,23 @@ function M.authenticate()
 end
 
 ---@param tokens table
-function M.store_tokens(tokens)
+---@param chatgpt { client_id: string, scopes: string[] }|nil Set for Sign in with ChatGPT tokens
+function M.store_tokens(tokens, chatgpt)
   if not M.state then M.state = { openai_token = nil } end
 
-  local account_id = extract_account_id(tokens)
   local refresh_token = tokens.refresh_token or (M.state.openai_token and M.state.openai_token.refresh_token)
   local json = {
     access_token = tokens.access_token,
     refresh_token = refresh_token,
     expires_at = os.time() + (tokens.expires_in or default_expires_in_sec),
-    account_id = account_id,
   }
+  if chatgpt then
+    json.client_id = chatgpt.client_id
+    json.scopes = chatgpt.scopes
+  else
+    -- The ChatGPT-Account-Id header is only needed by the legacy Codex backend.
+    json.account_id = extract_account_id(tokens)
+  end
 
   M.state.openai_token = json
 
@@ -537,46 +635,54 @@ function M.refresh_token(async, force)
   if M._refresh_in_flight then return false end
   M._refresh_in_flight = true
 
+  local chatgpt = is_chatgpt_token(token)
+  local endpoint = chatgpt and chatgpt_token_endpoint or token_endpoint
   local body = {
     grant_type = "refresh_token",
     refresh_token = token.refresh_token,
-    client_id = client_id,
+    client_id = chatgpt and token.client_id or client_id,
+    resource = chatgpt and chatgpt_resource or nil,
   }
+
+  local function fail(message)
+    vim.schedule(function() vim.notify("Failed to refresh access token: " .. message, vim.log.levels.ERROR) end)
+    return false
+  end
 
   local function handle_response(response)
     M._refresh_in_flight = false
 
-    if response.status >= 400 then
-      vim.schedule(
-        function()
-          vim.notify(
-            string.format("[%s]Failed to refresh access token: %s", response.status, response.body),
-            vim.log.levels.ERROR
-          )
-        end
-      )
-      return false
-    end
+    if response.status >= 400 then return fail(string.format("[%s] %s", response.status, response.body)) end
 
     local ok, tokens = pcall(vim.json.decode, response.body)
-    if ok then
+    if not ok or type(tokens) ~= "table" then return false end
+
+    if not chatgpt then
       M.store_tokens(tokens)
       return true
     end
 
-    return false
+    -- Sign in with ChatGPT rotates the refresh token on every refresh.
+    if type(tokens.refresh_token) ~= "string" or tokens.refresh_token == "" then
+      return fail("response did not contain a refresh token")
+    end
+    local scopes, scope_err = granted_scopes(tokens)
+    if not scopes then return fail(scope_err) end
+    M.store_tokens(tokens, { client_id = token.client_id, scopes = scopes })
+    return true
   end
 
   local curl_opts = {
     body = encode_form(body),
     headers = {
+      ["Accept"] = "application/json",
       ["Content-Type"] = "application/x-www-form-urlencoded",
     },
   }
 
   if async then
     curl.post(
-      token_endpoint,
+      endpoint,
       vim.tbl_deep_extend("force", {
         callback = handle_response,
       }, curl_opts)
@@ -584,7 +690,7 @@ function M.refresh_token(async, force)
     return true
   end
 
-  return handle_response(curl.post(token_endpoint, curl_opts))
+  return handle_response(curl.post(endpoint, curl_opts))
 end
 
 function M.cleanup()
@@ -612,9 +718,17 @@ end
 
 function M.get_token() return M.state and M.state.openai_token or nil end
 
+-- Tokens from the device code flow were issued to the Codex CLI client and are
+-- only accepted by the ChatGPT Codex backend, not the OpenAI API.
+---@return boolean
+function M.uses_codex_backend()
+  local token = M.get_token()
+  return token ~= nil and not is_chatgpt_token(token)
+end
+
 ---@param provider_conf table
 ---@return boolean
-function M.is_oauth(provider_conf) return provider_conf.auth_type == "codex" end
+function M.is_oauth(provider_conf) return provider_conf.auth_type == "chatgpt" end
 
 ---@param provider_conf table
 ---@param provider AvanteProviderFunctor
@@ -623,23 +737,25 @@ function M.get_headers(provider_conf, provider)
   if M.is_oauth(provider_conf) then
     if not M._is_setup then M.setup(provider) end
     if not M.state or not M.state.openai_token then
-      Utils.error("OpenAI Codex authentication required. Run :AvanteLogin to login, then try again.")
+      Utils.error("OpenAI authentication required. Run :AvanteLogin to login, then try again.")
       return nil
     end
 
     M.refresh_token(false, false)
     local token = M.state.openai_token
     if not token or not token.access_token then
-      Utils.error("OpenAI Codex access token unavailable. Please re-authenticate.")
+      Utils.error("OpenAI access token unavailable. Please re-authenticate.")
       return nil
     end
 
     local headers = {
       ["Authorization"] = "Bearer " .. token.access_token,
       ["User-Agent"] = Utils.get_user_agent_string(),
-      originator = "avante_nvim",
     }
-    if token.account_id and token.account_id ~= "" then headers["ChatGPT-Account-Id"] = token.account_id end
+    if not is_chatgpt_token(token) then
+      headers.originator = "avante_nvim"
+      if token.account_id and token.account_id ~= "" then headers["ChatGPT-Account-Id"] = token.account_id end
+    end
     return headers
   end
 

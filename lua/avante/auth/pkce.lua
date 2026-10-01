@@ -75,6 +75,8 @@ local function get_random_bytes(n)
   end
 end
 
+M.random_bytes = get_random_bytes
+
 --- URL-safe base64
 --- @param data string value to base64 encode
 --- @return string base64String base64 encoded string
