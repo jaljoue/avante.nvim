@@ -250,7 +250,9 @@ function M.authenticate()
     })
 
     if response.status >= 400 then
-      vim.schedule(function() vim.notify(string.format("HTTP %d: %s", response.status, response.body), vim.log.levels.ERROR) end)
+      vim.schedule(
+        function() vim.notify(string.format("HTTP %d: %s", response.status, response.body), vim.log.levels.ERROR) end
+      )
       return
     end
 
@@ -416,9 +418,7 @@ function M.store_tokens(tokens)
   }
   M.state.claude_token = json
 
-  vim.schedule(function()
-    AuthStore.update("claude", json)
-  end)
+  vim.schedule(function() AuthStore.update("claude", json) end)
 end
 
 function M.cleanup()
@@ -465,8 +465,7 @@ function M.get_headers(provider_conf, provider)
     return {
       authorization = string.format("Bearer %s", token.access_token),
       ["user-agent"] = "claude-cli/2.1.2 (external, cli)",
-      ["anthropic-beta"] =
-        "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-2024-07-31",
+      ["anthropic-beta"] = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,prompt-caching-2024-07-31",
     }
   end
 

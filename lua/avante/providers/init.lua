@@ -176,7 +176,7 @@ M = setmetatable(M, {
       if not ok then error("Failed to load provider: " .. provider_config.__inherited_from, 2) end
       -- auth_type describes how the base provider itself authenticates; it must
       -- not leak into inherited providers (e.g. openrouter must not become a
-      -- codex provider just because openai is one). Set auth_type explicitly on
+      -- ChatGPT OAuth provider just because openai is one). Set auth_type explicitly on
       -- the inherited provider to opt in.
       local has_user_setup = provider_config.setup ~= nil
       local base_config = base_provider_config

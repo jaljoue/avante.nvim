@@ -2,7 +2,7 @@ if vim.fn.has("nvim-0.12") == 0 then
   vim.api.nvim_echo({
     { "Avante requires at least nvim-0.12", "ErrorMsg" },
     { "Please upgrade your neovim version", "WarningMsg" },
-    { "Press any key to exit",              "ErrorMsg" },
+    { "Press any key to exit", "ErrorMsg" },
   }, true, {})
   vim.fn.getchar()
   vim.cmd([[quit]])
@@ -45,7 +45,7 @@ if Config.support_paste_image() then
       local img_clip_util = require("img-clip.util")
       local img_clip_clipboard = require("img-clip.clipboard")
       local is_image_candidate = (line and (img_clip_util.is_image_url(line) or img_clip_util.is_image_path(line)))
-          or img_clip_clipboard.content_is_image()
+        or img_clip_clipboard.content_is_image()
       if not is_image_candidate then return overridden(lines, phase) end
 
       local ok = Clipboard.paste_image(line)

@@ -210,9 +210,7 @@ describe("claude provider", function()
         provider_opts = {},
       }
       package.loaded["avante.ui.oauth"] = {
-        show_auth_url = function(opts)
-          captured_oauth_opts = opts
-        end,
+        show_auth_url = function(opts) captured_oauth_opts = opts end,
       }
       claude_provider = require("avante.providers.claude")
     end)

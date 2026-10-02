@@ -22,8 +22,6 @@ M.role_map = {
 }
 
 local chatgpt_endpoint = "https://api.openai.com/v1/responses"
--- Legacy Codex CLI tokens (device code login) only work against the ChatGPT backend.
-local codex_endpoint = "https://chatgpt.com/backend-api/codex/responses"
 local chatgpt_usage_limit_code = "subscription_sharing_usage_limit_exceeded"
 local chatgpt_usage_url = "https://chatgpt.com/settings/usage"
 local chatgpt_model_ids = {
@@ -118,6 +116,7 @@ function M:list_models(timeout)
     self = provider
   end
   local provider_conf = Providers.parse_config(self)
+  ---@cast provider_conf AvanteOpenAIProvider
   if provider_conf.auth_type == "chatgpt" then return chatgpt_models() end
 
   if self._model_list_cache then return self._model_list_cache end
@@ -157,19 +156,19 @@ function M:list_models(timeout)
   end
 
   local models = vim
-      .iter(res_body.data)
-      :filter(function(model) return type(model) == "table" and type(model.id) == "string" end)
-      :map(
-        function(model)
-          return {
-            id = model.id,
-            name = model.id,
-            display_name = model.id,
-            version = tostring(model.created or model.owned_by or ""),
-          }
-        end
-      )
-      :totable()
+    .iter(res_body.data)
+    :filter(function(model) return type(model) == "table" and type(model.id) == "string" end)
+    :map(
+      function(model)
+        return {
+          id = model.id,
+          name = model.id,
+          display_name = model.id,
+          version = tostring(model.created or model.owned_by or ""),
+        }
+      end
+    )
+    :totable()
 
   self._model_list_cache = models
   return models
@@ -180,13 +179,13 @@ function M.get_user_message(opts)
   vim.deprecate("get_user_message", "parse_messages", "0.1.0", "avante.nvim")
   return table.concat(
     vim
-    .iter(opts.messages)
-    :filter(function(_, value) return value == nil or value.role ~= "user" end)
-    :fold({}, function(acc, value)
-      acc = vim.list_extend({}, acc)
-      acc = vim.list_extend(acc, { value.content })
-      return acc
-    end),
+      .iter(opts.messages)
+      :filter(function(_, value) return value == nil or value.role ~= "user" end)
+      :fold({}, function(acc, value)
+        acc = vim.list_extend({}, acc)
+        acc = vim.list_extend(acc, { value.content })
+        return acc
+      end),
     "\n"
   )
 end
@@ -253,17 +252,10 @@ function M.setup()
   M.api_key_name = OpenAIAuth.api_key_name
 end
 
-function M.authenticate(...) return OpenAIAuth.authenticate(...) end
-
-function M.refresh_token(...) return OpenAIAuth.refresh_token(...) end
-
-function M.store_tokens(...) return OpenAIAuth.store_tokens(...) end
-
-function M.cleanup_openai() return OpenAIAuth.cleanup() end
-
 function M:parse_messages(opts)
   local messages = {}
   local provider_conf, _ = Providers.parse_config(self)
+  ---@cast provider_conf AvanteOpenAIProvider
   provider_conf.model = resolve_chatgpt_model(provider_conf)
   local use_response_api = Providers.resolve_use_response_api(provider_conf, opts)
   local pending_reasoning_content = nil
@@ -385,9 +377,10 @@ function M:parse_messages(opts)
         if #tool_calls > 0 then
           -- Only skip tool_calls if using Response API with previous_response_id support
           -- Copilot uses Response API format but doesn't support previous_response_id
-          local should_include_tool_calls = not use_response_api
-              or force_include_tool_calls
-              or not provider_conf.support_previous_response_id
+          local should_include_tool_calls = provider_conf.auth_type == "chatgpt"
+            or not use_response_api
+            or force_include_tool_calls
+            or not provider_conf.support_previous_response_id
 
           if should_include_tool_calls then
             -- For Response API without previous_response_id support (like Copilot),
@@ -479,10 +472,10 @@ function M:parse_messages(opts)
   vim.iter(messages):each(function(message)
     local role = message.role
     if
-        role == prev_role
-        and role ~= "tool"
-        and prev_type ~= "function_call"
-        and prev_type ~= "function_call_output"
+      role == prev_role
+      and role ~= "tool"
+      and prev_type ~= "function_call"
+      and prev_type ~= "function_call_output"
     then
       if role == self.role_map["assistant"] then
         table.insert(final_messages, { role = self.role_map["user"], content = "Ok" })
@@ -518,7 +511,7 @@ function M:add_text_message(ctx, text, state, opts)
   if ctx.content == nil then ctx.content = "" end
   ctx.content = ctx.content .. text
   local content =
-      ctx.content:gsub("<tool_code>", ""):gsub("</tool_code>", ""):gsub("<tool_call>", ""):gsub("</tool_call>", "")
+    ctx.content:gsub("<tool_code>", ""):gsub("</tool_code>", ""):gsub("<tool_call>", ""):gsub("</tool_call>", "")
   ctx.content = content
   local msg = HistoryMessage:new("assistant", ctx.content, {
     state = state,
@@ -780,14 +773,14 @@ function M:parse_response(ctx, data_stream, _, opts)
         self.last_response_id = jsn.response.id
       end
       if
-          ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
+        ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
       then
         ctx.returned_think_end_tag = true
         if opts.on_chunk then
           if
-              ctx.last_think_content
-              and ctx.last_think_content ~= vim.NIL
-              and ctx.last_think_content:sub(-1) ~= "\n"
+            ctx.last_think_content
+            and ctx.last_think_content ~= vim.NIL
+            and ctx.last_think_content:sub(-1) ~= "\n"
           then
             opts.on_chunk("\n</think>\n")
           else
@@ -830,6 +823,7 @@ function M:parse_response(ctx, data_stream, _, opts)
   local delta = choice.delta
   if not delta then
     local provider_conf = Providers.parse_config(self)
+    ---@cast provider_conf AvanteOpenAIProvider
     if provider_conf.model:match("o1") then delta = choice.message end
   end
   if not delta then return end
@@ -878,7 +872,7 @@ function M:parse_response(ctx, data_stream, _, opts)
     end
   elseif delta.content then
     if
-        ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
+      ctx.returned_think_start_tag ~= nil and (ctx.returned_think_end_tag == nil or not ctx.returned_think_end_tag)
     then
       ctx.returned_think_end_tag = true
       if opts.on_chunk then
@@ -1001,16 +995,13 @@ function M:parse_curl_args(prompt_opts)
 
   -- Determine endpoint path based on use_response_api
   local endpoint_path = use_response_api and "/responses" or "/chat/completions"
-  if auth_type == "chatgpt" then endpoint_path = "/responses" end
 
-  local original_use_response_api = self.use_response_api
-  if auth_type == "chatgpt" then self.use_response_api = true end
   local has_function_outputs = false
   if use_response_api and prompt_opts.messages then
     for _, msg in ipairs(prompt_opts.messages) do
       if type(msg.content) == "table" then
         for _, item in ipairs(msg.content) do
-          if item.type == "tool_result" then
+          if type(item) == "table" and item.type == "tool_result" then
             has_function_outputs = true
             break
           end
@@ -1021,37 +1012,16 @@ function M:parse_curl_args(prompt_opts)
   end
 
   local should_use_previous_response_id = use_response_api
-      and supports_previous_response_id
-      and has_function_outputs
-      and session_ctx
-      and session_ctx.last_response_id
-      and session_ctx.last_response_model == provider_conf.model
-      and session_ctx.last_response_auth_type == auth_type
+    and supports_previous_response_id
+    and has_function_outputs
+    and session_ctx
+    and session_ctx.last_response_id
+    and session_ctx.last_response_model == provider_conf.model
+    and session_ctx.last_response_auth_type == auth_type
   if use_response_api and has_function_outputs and not should_use_previous_response_id then
     prompt_opts.force_include_tool_calls = true
   end
   local parsed_messages = self:parse_messages(prompt_opts)
-  if auth_type == "chatgpt" then self.use_response_api = original_use_response_api end
-
-  local codex_backend = auth_type == "chatgpt" and OpenAIAuth.uses_codex_backend()
-  local codex_instructions = nil
-  if codex_backend then
-    local filtered_messages = {}
-    for _, message in ipairs(parsed_messages) do
-      if message.role == "system" or message.role == "developer" then
-        if type(message.content) == "string" and message.content ~= "" then
-          if codex_instructions == nil then
-            codex_instructions = message.content
-          else
-            codex_instructions = codex_instructions .. "\n\n" .. message.content
-          end
-        end
-      else
-        table.insert(filtered_messages, message)
-      end
-    end
-    parsed_messages = filtered_messages
-  end
 
   -- Build base body
   local base_body = {
@@ -1108,6 +1078,8 @@ function M:parse_curl_args(prompt_opts)
   -- Adjustments for ChatGPT subscription login
   if auth_type == "chatgpt" then
     request_body.store = false
+    request_body.stream = true
+    request_body.previous_response_id = nil
     request_body.messages = nil
     request_body.input = nil
     -- Subscription tokens reject these request fields.
@@ -1115,17 +1087,7 @@ function M:parse_curl_args(prompt_opts)
     request_body.temperature = nil
     request_body.prompt_cache_retention = nil
   end
-  if codex_backend then
-    local instructions = codex_instructions or prompt_opts.system_prompt
-    if instructions and instructions ~= "" then
-      request_body.instructions = instructions
-    else
-      request_body.instructions = nil
-    end
-  end
-
-  local url = Utils.url_join(provider_conf.endpoint, endpoint_path)
-  if auth_type == "chatgpt" then url = codex_backend and codex_endpoint or chatgpt_endpoint end
+  local url = auth_type == "chatgpt" and chatgpt_endpoint or Utils.url_join(provider_conf.endpoint, endpoint_path)
 
   return {
     url = url,

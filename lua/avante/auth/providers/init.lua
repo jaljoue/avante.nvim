@@ -18,9 +18,7 @@ function M.list_oauth_providers()
     if t == "file" and name:match("%.lua$") and name ~= "init.lua" then
       local provider_name = name:gsub("%.lua$", "")
       local ok, mod = pcall(require, "avante.auth.providers." .. provider_name)
-      if ok and type(mod.authenticate) == "function" then
-        table.insert(providers, provider_name)
-      end
+      if ok and type(mod.authenticate) == "function" then table.insert(providers, provider_name) end
     end
   end
 
