@@ -11,14 +11,19 @@ login is needed. Setup never opens the browser.
 | [oidc.lua](oidc.lua) | Verify OpenAI ID-token signatures and identity claims using JWKS and OpenSSL |
 | [oauth_server.lua](oauth_server.lua) | One pending loopback callback, state verification, and a five-minute timeout |
 | [pkce.lua](pkce.lua) | Cryptographic randomness and the PKCE verifier/challenge |
-| [store.lua](store.lua) | Shared credential file, atomic writes, write lock, and directory watcher |
+| [store.lua](store.lua) | Shared credential file, atomic writes, named locks, and directory watcher |
 | [../providers/openai.lua](../providers/openai.lua) | Model choices, stateless Responses requests, tool history, and stream events |
 | [providers/claude.lua](providers/claude.lua) | Claude's existing manual authorization flow |
 | [../ui/oauth.lua](../ui/oauth.lua) | Browser/copy popup used by the manual flow |
 
 ## OpenAI sign-in and refresh
 
-1. `authenticate()` creates fresh PKCE, state, and nonce values, then starts the
+1. `authenticate()` first checks OpenSSL by verifying a fixed public signature.
+   If the executable is missing, cannot run, or fails RSA/SHA-256 verification,
+   sign-in stops before opening the browser. Neovim supplies hashing and secure
+   randomness but has no built-in RSA verifier. OpenSSL runs in a subprocess
+   with a timeout, so a native crash cannot take down Neovim.
+   Sign-in then creates fresh PKCE, state, and nonce values and starts the
    listener on `127.0.0.1`. The initial authorization requests dynamic client
    registration with Avante's stable host ID. Later sign-ins reuse the saved
    issued client ID and ID-token hint.
@@ -28,20 +33,26 @@ login is needed. Setup never opens the browser.
    existing credentials intact.
 3. The request provider sends the access token to the public Responses API.
    `store = false` requires full message and tool-call history on each request,
-   without `previous_response_id` or references to stored reasoning items.
-4. A timer checks expiry once a minute. Requests also refresh near expiry. An
-   exclusive `openai-refresh.lock` covers reading the latest credentials,
-   rotating the tokens, and persisting the replacement. Another process reloads
+   without `previous_response_id`. Encrypted reasoning items are self-contained
+   and replayed with their IDs and summaries. ID-only reasoning items are omitted.
+4. A timer checks expiry once a minute. Requests also refresh near expiry.
+   `store.try_lock("openai-refresh")` returns a release function for an exclusive
+   lock covering reading the latest credentials, rotating the tokens, and
+   persisting the replacement. Another process reloads
    the replacement instead of reusing the old refresh token.
 5. `store.lua` watches the containing directory because atomic writes replace
    the file's inode. Writes preserve the other providers' credentials and use
    owner-only permissions on Unix. Cleanup stops timers, callbacks, and watchers.
 
 The paths under `stdpath("data") .. "/avante/"` are `auth.json`, `auth.lock`,
-`openai-refresh.lock`, and `device_id`. `device_id` is a stable host UUID retained
+`openai-refresh.lock`, `claude-timer.lock`, and `device_id`.
+`device_id` is a stable host UUID retained
 independently of credentials. Lock files contain a PID, and a dead owner's lock
-can be reclaimed. Access, refresh, and ID tokens must stay out of logs and source
-control, including authorization URLs containing `id_token_hint`.
+can be reclaimed. `store.try_lock(name)` also manages the credential write lock
+and Claude's timer lock. Refresh and write locks have separate names so saving
+rotated credentials does not attempt to reacquire the refresh lock.
+Access, refresh, and ID tokens must stay out of logs and source control,
+including authorization URLs containing `id_token_hint`.
 
 This implementation keeps one OpenAI registration. Device-code login and an
 account picker are outside this change. Model choices currently use a built-in
@@ -50,6 +61,12 @@ list rather than the account catalog.
 The protocol reference is OpenAI's [registration and sign-in guide](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
 with [refresh guidance](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
 and the [inference contract](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
+The [HTTP preview requirements](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+still require `store = false` for ChatGPT plan usage through the public API.
+See [stateless reasoning](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses)
+for encrypted reasoning replay. Pi's [OpenAI Responses adapter](https://github.com/earendil-works/pi/blob/main/packages/ai/src/api/openai-responses.ts)
+and [history conversion](https://github.com/earendil-works/pi/blob/main/packages/ai/src/api/openai-responses-shared.ts)
+use the same approach.
 
 ## Checks
 

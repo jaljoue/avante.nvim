@@ -68,6 +68,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
       wait_for_callback = function(state, success) callback = { state = state, success = success } end,
     }
     package.loaded["avante.auth.oidc"] = {
+      check_available = function() return true end,
       validate = function(id)
         if id == "valid-id" then return { sub = "user-1" } end
         return nil, "Invalid identity"
@@ -204,7 +205,20 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.is_nil(auth.get_token())
   end)
 
-  busted.it("rotates both tokens and reloads another process's completed refresh", function()
+  it("stops before sign-in when signature verification is unavailable", function()
+    local token = credentials()
+    assert.is_true(store.update("openai", token))
+    auth.state.openai_token = token
+    package.loaded["avante.auth.oidc"].check_available = function() return false, "OpenSSL is unavailable" end
+    auth.authenticate()
+    assert.is_true(server_stopped)
+    assert.is_nil(callback)
+    assert.is_nil(opened_url)
+    assert.equals(0, #posts)
+    assert.equals("old-access", store.read().openai.access_token)
+  end)
+
+  it("rotates both tokens and reloads another process's completed refresh", function()
     auth._is_setup = true
     auth.state.openai_token = credentials()
     assert.is_true(store.update("openai", credentials()))
@@ -223,6 +237,11 @@ busted.describe("OpenAI sign-in lifecycle", function()
 
   busted.it("preserves credentials and releases the refresh lock after failure", function()
     auth.state.openai_token = credentials()
+    assert.is_true(store.update("openai", credentials()))
+    -- A Neovim process that exited must not leave refresh permanently blocked.
+    local owner = vim.system({ vim.v.progpath, "--version" })
+    owner:wait()
+    Path:new(data_dir .. "/avante/openai-refresh.lock"):write(tostring(owner.pid), "w")
     response.refresh_token = nil
     assert.is_false(auth.refresh_token(false))
     assert.equals("old-access", auth.get_token().access_token)
@@ -243,6 +262,8 @@ busted.describe("OpenAI sign-in lifecycle", function()
     end
     auth.state.openai_token = credentials()
     assert.is_true(auth.refresh_token(true))
+    -- Holding the refresh lock must still allow writes for other providers.
+    assert.is_true(store.update("claude", { access_token = "other-provider" }))
     package.loaded["avante.auth.providers.openai"] = nil
     local other = require("avante.auth.providers.openai")
     other.state.openai_token = credentials()
@@ -251,6 +272,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.is_true(vim.wait(1000, function() return not auth._refresh_in_flight end))
     assert.is_false(other.refresh_token(false))
     assert.equals("new-access", other.get_token().access_token)
+    assert.equals("other-provider", store.read().claude.access_token)
     other.cleanup()
   end)
 

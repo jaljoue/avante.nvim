@@ -922,7 +922,7 @@ Opens a browser window with the login URL. After authorizing, copy the authoriza
 
 Run `:AvanteLogin`, select `openai`, and continue with ChatGPT in your browser. Avante uses the official [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and sends streaming requests to `https://api.openai.com/v1/responses` with `store = false`.
 
-Sign-in requires a browser on the same machine as Neovim and the `openssl` executable on `PATH` to verify OpenAI's ID tokens. The callback listener binds to `127.0.0.1`, preferring port 1455 and choosing an available port if it is busy. Device-code sign-in for remote sessions is deferred.
+Sign-in requires a browser on the same machine as Neovim and the `openssl` executable on `PATH` to verify OpenAI's ID tokens. Avante checks RSA/SHA-256 verification before opening the browser and stops sign-in if OpenSSL is missing or fails. OpenSSL runs as a separate process. The callback listener binds to `127.0.0.1`, preferring port 1455 and choosing an available port if it is busy. Device-code sign-in for remote sessions is deferred.
 
 Set a ChatGPT model in your provider config, for example `model = "gpt-6.1-sol"`, or choose one through `:AvanteModels`. The picker uses a built-in list. Model access and usage limits depend on your account and plan. If the plan's app usage limit is reached, Avante stops the request and links to [ChatGPT usage settings](https://chatgpt.com/settings/usage).
 
