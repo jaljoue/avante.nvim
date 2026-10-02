@@ -59,11 +59,12 @@ busted.describe("openai provider with ChatGPT sign in", function()
     assert.is_nil(args.body.prompt_cache_retention)
     assert.is_nil(args.body.instructions)
     assert.is_nil(args.body.previous_response_id)
+    assert.is_true(vim.tbl_contains(args.body.include, "reasoning.encrypted_content"))
     assert.equals("developer", args.body.input[1].role)
     assert.equals("system prompt", args.body.input[1].content)
   end)
 
-  busted.it("resends tool calls and results without stored response or reasoning IDs", function()
+  it("replays encrypted reasoning and tool history without stored responses", function()
     local args = openai:parse_curl_args({
       system_prompt = "system prompt",
       session_ctx = {
@@ -76,22 +77,31 @@ busted.describe("openai provider with ChatGPT sign in", function()
         { role = "assistant", content = { type = "reasoning", id = "old-reasoning" } },
         {
           role = "assistant",
+          content = { type = "reasoning", id = "rs_first", encrypted_content = "first-ciphertext", summary = {} },
+        },
+        {
+          role = "assistant",
           content = {
+            { type = "reasoning", id = "rs_second", encrypted_content = "second-ciphertext", summary = {} },
             { type = "tool_use", id = "call-1", name = "read_file", input = { path = "example.lua" } },
           },
         },
         { role = "user", content = { { type = "tool_result", tool_use_id = "call-1", content = "file contents" } } },
       },
     })
-    local call, result
+    local call, result, reasoning = nil, nil, {}
     for _, item in ipairs(args.body.input) do
-      assert.not_equals("reasoning", item.type)
+      if item.type == "reasoning" then table.insert(reasoning, item) end
       if item.type == "function_call" then call = item end
       if item.type == "function_call_output" then result = item end
     end
     assert.equals("call-1", call.call_id)
     assert.equals(call.call_id, result.call_id)
     assert.equals("file contents", result.output)
+    assert.same({
+      { type = "reasoning", id = "rs_first", encrypted_content = "first-ciphertext", summary = {} },
+      { type = "reasoning", id = "rs_second", encrypted_content = "second-ciphertext", summary = {} },
+    }, reasoning)
     assert.is_nil(args.body.previous_response_id)
   end)
 end)

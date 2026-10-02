@@ -52,7 +52,26 @@ local function verify_signature(key, signature, message)
   end)
   os.remove(key_path)
   os.remove(signature_path)
-  return ok and result.code == 0
+  return ok and result.code == 0 and result.signal == 0
+end
+
+---Neovim has hashing and randomness, but no built-in RSA signature verifier.
+---Check a fixed, public test vector before opening the browser. Running OpenSSL
+---as a bounded subprocess keeps library/version failures outside Neovim.
+---@return boolean available
+---@return string|nil error
+function M.check_available()
+  local err = "OpenAI sign-in requires a working OpenSSL executable with RSA/SHA-256 support on PATH"
+  if vim.fn.executable("openssl") ~= 1 then return false, err end
+  local key = {
+    n = "slC1W8zeptImsuG1YWXF4s7HLk1pC69qEDd9sSqvJFgg7Y_QQ4ZwFgdx8wR0gBVXFZH3v1o8evBrYg5aR0dk6tsd2WwnRp_0a-CC9wwv3HNtXE2t5v758ho2uq8VjilyHAX5TAl_RDbK1RLrtnu_PUZUPV9IjcVYa05vku6P1an16Py-o_7w39bGogXxdKJwaSCzJbnMFeawyvJHCWpZx6DkOzLz1DP-CrzBF3h2lIOid-SFHJ-gb7x5Edj6ie8n8BNysPg4ii0ZV8-MObGvDwQhyCr1luEnURd3YYIQNRgXoCFPDoWCMcpOt6lPIZUuX642J22BiLPI9JnDbT27Fw",
+    e = "AQAB",
+  }
+  local signature = decode_base64url(
+    "GobfRVZRcSCNsxg6gabr39PgC7PbwHNuQdJyZSaLWdlFkmhbfno5vMCQEGcKkdekHfoL47ntrOeSw1N8vyVgjloX-NTXJYmqeTKIMs0NmsYuRpJY2QyIOpZAO4gi8KBGaN7nDVu5FD5_kmJGM8x0sp-hSXNFyxDvle40-T6NTc0DBJMeXkOVAuCmDnZZ57IKyWE-DIywalm52chpFrr7j5_WFgKlxXd2V_SBonSvc3qQuxiTW5R5iVbd8fMJOJ8-3Bb34IU931aaqym3CjgkScyr6rA-Wdzd5tZQE-3pXcf8sz0uu_tEUf-5Sb75wa4it8tVj-egioZhP5nAODtYZw"
+  )
+  if not verify_signature(key, signature, "Avante OpenAI sign-in") then return false, err end
+  return true
 end
 
 ---@param id_token string

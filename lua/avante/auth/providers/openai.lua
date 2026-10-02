@@ -30,7 +30,6 @@ local resource = "https://api.openai.com/v1"
 local direct_token_scope = "chatgpt.tokens.use.direct"
 local scope = "openid profile email offline_access resource.invoke " .. direct_token_scope
 local host_id_path = vim.fn.stdpath("data") .. "/avante/device_id"
-local refresh_lock_path = vim.fn.stdpath("data") .. "/avante/openai-refresh.lock"
 local refresh_skew_sec = 120
 local refresh_check_interval_ms = 60000
 
@@ -96,19 +95,6 @@ local function granted_scopes(tokens)
     return nil, "OpenAI OAuth grant did not include " .. direct_token_scope
   end
   return scopes
-end
-
--- Exclusive creation serializes rotating refresh tokens across Neovim processes.
-local function acquire_refresh_lock()
-  vim.fn.mkdir(vim.fn.fnamemodify(refresh_lock_path, ":h"), "p")
-  local ok, content = pcall(function() return Path:new(refresh_lock_path):read() end)
-  local pid = ok and tonumber(content)
-  if pid and not vim.uv.kill(pid, 0) then os.remove(refresh_lock_path) end
-  local fd = vim.uv.fs_open(refresh_lock_path, "wx", 384)
-  if not fd then return false end
-  vim.uv.fs_write(fd, tostring(vim.fn.getpid()), 0)
-  vim.uv.fs_close(fd)
-  return true
 end
 
 local function setup_token_management(provider)
@@ -206,11 +192,9 @@ function M.setup(provider)
 end
 
 function M.authenticate()
-  if vim.fn.executable("openssl") ~= 1 then
-    Utils.error("OpenAI sign-in requires openssl to validate ID tokens")
-    return
-  end
   OAuthServer.stop()
+  local crypto_ok, crypto_err = OIDC.check_available()
+  if not crypto_ok then return Utils.error(crypto_err or "OpenAI signature verification unavailable") end
   local host_id, host_err = get_or_create_host_id()
   if not host_id then return Utils.error("Failed to create OpenAI host ID: " .. tostring(host_err)) end
   local verifier, verifier_err = pkce.generate_verifier()
@@ -323,7 +307,8 @@ function M.refresh_token(async, force)
   local token = M.get_token()
   if not token or not is_valid_token(token) or M._refresh_in_flight then return false end
   if not force and token.expires_at - os.time() > refresh_skew_sec then return false end
-  if not acquire_refresh_lock() then return false end
+  local release = AuthStore.try_lock("openai-refresh")
+  if not release then return false end
   -- Another process may have refreshed since our watcher last ran.
   local data = AuthStore.read()
   if data and is_valid_token(data.openai) then
@@ -331,7 +316,7 @@ function M.refresh_token(async, force)
     M.state.openai_token = token
   end
   if not force and token.expires_at - os.time() > refresh_skew_sec then
-    os.remove(refresh_lock_path)
+    release()
     return false
   end
   M._refresh_in_flight = true
@@ -349,7 +334,7 @@ function M.refresh_token(async, force)
       Utils.error("Failed to refresh OpenAI credentials: " .. tostring(err))
     end
     M._refresh_in_flight = false
-    os.remove(refresh_lock_path)
+    release()
     return success
   end
   local opts = token_request_options({

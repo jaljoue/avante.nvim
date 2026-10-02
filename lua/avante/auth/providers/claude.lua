@@ -1,7 +1,6 @@
 local Utils = require("avante.utils")
 local Config = require("avante.config")
 local P = require("avante.providers")
-local Path = require("plenary.path")
 local pkce = require("avante.auth.pkce")
 local AuthStore = require("avante.auth.store")
 local OAuthUI = require("avante.ui.oauth")
@@ -15,7 +14,7 @@ local curl = require("plenary.curl")
 ---@class AvanteAuthProvider
 local M = {}
 
-local lockfile_path = vim.fn.stdpath("data") .. "/avante/claude-timer.lock"
+local release_timer_lock
 local auth_endpoint = "https://claude.ai/oauth/authorize"
 local token_endpoint = "https://console.anthropic.com/v1/oauth/token"
 local client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -45,37 +44,9 @@ local function is_valid_token(token)
     and token.refresh_token ~= ""
 end
 
-local function is_process_running(pid)
-  local result = vim.uv.kill(pid, 0)
-  if result ~= nil and result == 0 then
-    return true
-  else
-    return false
-  end
-end
-
 local function try_acquire_timer_lock()
-  local lockfile = Path:new(lockfile_path)
-  local tmp_lockfile = lockfile_path .. ".tmp." .. vim.fn.getpid()
-
-  Path:new(tmp_lockfile):write(tostring(vim.fn.getpid()), "w")
-
-  if lockfile:exists() then
-    local content = lockfile:read()
-    local pid = tonumber(content)
-    if pid and is_process_running(pid) then
-      os.remove(tmp_lockfile)
-      return false
-    end
-  end
-
-  local success = os.rename(tmp_lockfile, lockfile_path)
-  if not success then
-    os.remove(tmp_lockfile)
-    return false
-  end
-
-  return true
+  if not release_timer_lock then release_timer_lock = AuthStore.try_lock("claude-timer") end
+  return release_timer_lock ~= nil
 end
 
 local function setup_timer()
@@ -426,13 +397,10 @@ function M.cleanup()
     M._refresh_timer:stop()
     M._refresh_timer:close()
     M._refresh_timer = nil
-
-    local lockfile = Path:new(lockfile_path)
-    if lockfile:exists() then
-      local content = lockfile:read()
-      local pid = tonumber(content)
-      if pid and pid == vim.fn.getpid() then vim.fs.rm(tostring(lockfile)) end
-    end
+  end
+  if release_timer_lock then
+    release_timer_lock()
+    release_timer_lock = nil
   end
 
   if M._manager_check_timer then

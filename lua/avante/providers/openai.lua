@@ -263,6 +263,23 @@ function M:parse_messages(opts)
   local allow_reasoning_input = opts and opts.session_ctx and opts.session_ctx.allow_reasoning_input == true
   local force_include_tool_calls = opts and opts.force_include_tool_calls == true
 
+  local function add_reasoning(item, allow_stored)
+    -- Encrypted reasoning is self-contained and can be replayed with store=false.
+    -- An ID without encrypted content requires a stored response.
+    local has_encrypted_content = type(item.encrypted_content) == "string" and item.encrypted_content ~= ""
+    if
+      not use_response_api or not (has_encrypted_content or (allow_stored and provider_conf.auth_type ~= "chatgpt"))
+    then
+      return
+    end
+    table.insert(messages, {
+      type = "reasoning",
+      id = item.id,
+      encrypted_content = item.encrypted_content,
+      summary = item.summary,
+    })
+  end
+
   local use_ReAct_prompt = provider_conf.use_ReAct_prompt == true
   local system_prompt = opts.system_prompt
 
@@ -286,17 +303,7 @@ function M:parse_messages(opts)
     elseif type(msg.content) == "table" then
       -- Check if this is a reasoning message (object with type "reasoning")
       if msg.content.type == "reasoning" then
-        -- Avoid re-sending response-item IDs unless explicitly allowed.
-        -- For ChatGPT auth, items are not persisted (store=false) so referencing
-        -- them by id is invalid. Skip reasoning items entirely.
-        if allow_reasoning_input then
-          table.insert(messages, {
-            type = "reasoning",
-            id = msg.content.id,
-            encrypted_content = msg.content.encrypted_content,
-            summary = msg.content.summary,
-          })
-        end
+        add_reasoning(msg.content, allow_reasoning_input)
         return
       end
 
@@ -316,15 +323,7 @@ function M:parse_messages(opts)
             },
           })
         elseif item.type == "reasoning" then
-          if allow_reasoning_input then
-            -- Add reasoning message directly (for Response API)
-            table.insert(messages, {
-              type = "reasoning",
-              id = item.id,
-              encrypted_content = item.encrypted_content,
-              summary = item.summary,
-            })
-          end
+          add_reasoning(item, true)
         elseif item.type == "thinking" then
           local thinking_content = item.thinking or ""
           if thinking_content ~= "" then
@@ -1077,8 +1076,14 @@ function M:parse_curl_args(prompt_opts)
 
   -- Adjustments for ChatGPT subscription login
   if auth_type == "chatgpt" then
+    -- HTTP subscription requests require full history; they cannot chain stored
+    -- responses. Ask for encrypted reasoning to preserve state between turns.
     request_body.store = false
     request_body.stream = true
+    request_body.include = request_body.include or {}
+    if not vim.tbl_contains(request_body.include, "reasoning.encrypted_content") then
+      table.insert(request_body.include, "reasoning.encrypted_content")
+    end
     request_body.previous_response_id = nil
     request_body.messages = nil
     request_body.input = nil

@@ -5,37 +5,37 @@ local M = {}
 
 local auth_path = vim.fn.stdpath("data") .. "/avante/auth.json"
 local legacy_claude_path = vim.fn.stdpath("data") .. "/avante/claude-auth.json"
-local lockfile_path = vim.fn.stdpath("data") .. "/avante/auth.lock"
 
 local callbacks = {}
 
-local function is_process_running(pid)
-  local result = vim.uv.kill(pid, 0)
-  if result ~= nil and result == 0 then
-    return true
-  else
-    return false
-  end
-end
-
-local function try_acquire_lock()
+---Acquire a named auth lock without waiting. Keep the returned release function
+---until the operation finishes, including asynchronous refresh and persistence.
+---@param name string Lock name without the .lock suffix
+---@return fun()|nil release
+function M.try_lock(name)
+  local lockfile_path = vim.fn.fnamemodify(auth_path, ":h") .. "/" .. name .. ".lock"
   vim.fn.mkdir(vim.fn.fnamemodify(lockfile_path, ":h"), "p")
   local ok, content = pcall(function() return Path:new(lockfile_path):read() end)
   local pid = ok and tonumber(content)
-  if pid and not is_process_running(pid) then os.remove(lockfile_path) end
+  if pid then
+    local _, _, err = vim.uv.kill(pid, 0)
+    if err == "ESRCH" then os.remove(lockfile_path) end
+  end
   local fd = vim.uv.fs_open(lockfile_path, "wx", 384)
-  if not fd then return false end
-  vim.uv.fs_write(fd, tostring(vim.fn.getpid()), 0)
+  if not fd then return nil end
+  local owner = tostring(vim.fn.getpid())
+  local written = vim.uv.fs_write(fd, owner, 0)
   vim.uv.fs_close(fd)
-  return true
-end
-
-local function release_lock()
-  local lockfile = Path:new(lockfile_path)
-  if lockfile:exists() then
-    local content = lockfile:read()
-    local pid = tonumber(content)
-    if pid and pid == vim.fn.getpid() then lockfile:rm() end
+  if written ~= #owner then
+    os.remove(lockfile_path)
+    return nil
+  end
+  local released = false
+  return function()
+    if released then return end
+    released = true
+    local read_ok, current = pcall(function() return Path:new(lockfile_path):read() end)
+    if read_ok and current == owner then os.remove(lockfile_path) end
   end
 end
 
@@ -90,9 +90,10 @@ local function with_lock(fn)
   -- Credential writes must finish before a rotating-token refresh releases its
   -- lock. Bound the wait instead of scheduling the write for a later tick.
   for _ = 1, 6 do
-    if try_acquire_lock() then
+    local release = M.try_lock("auth")
+    if release then
       local ok, result = pcall(fn)
-      release_lock()
+      release()
       if ok then return result end
       Utils.warn("Failed to update auth file: " .. tostring(result), { once = true, title = "Avante" })
       return false

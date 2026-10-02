@@ -47,7 +47,8 @@ busted.describe("OpenAI ID-token verification", function()
     os.remove(key_path)
   end)
 
-  busted.it("verifies a signed identity with OpenAI's published key", function()
+  it("verifies a signed identity with OpenAI's published key", function()
+    assert.is_true(oidc.check_available())
     local identity, err = oidc.validate(signed_token(), "oaiapp_test", "test-nonce")
     assert.is_nil(err)
     assert.equals("user-1", identity.sub)
@@ -69,5 +70,32 @@ busted.describe("OpenAI ID-token verification", function()
       change()
       assert.is_nil(oidc.validate(signed_token(), "oaiapp_test", "test-nonce"))
     end
+  end)
+end)
+
+describe("OpenAI crypto availability", function()
+  it("reports missing or failing OpenSSL without raising an error", function()
+    local original_executable, original_system = vim.fn.executable, vim.system
+    local ok, err = pcall(function()
+      vim.fn.executable = function() return 0 end
+      assert.is_false(oidc.check_available())
+      vim.fn.executable = function() return 1 end
+      for _, run in ipairs({
+        function() error("could not spawn OpenSSL") end,
+        function()
+          return { wait = function() return { code = 1 } end }
+        end,
+        function()
+          return { wait = function() return { code = 0, signal = 11 } end }
+        end,
+      }) do
+        vim.system = run
+        local available, message = oidc.check_available()
+        assert.is_false(available)
+        assert.matches("OpenSSL", message)
+      end
+    end)
+    vim.fn.executable, vim.system = original_executable, original_system
+    assert.is_true(ok, err)
   end)
 end)
