@@ -19,26 +19,14 @@ local function is_process_running(pid)
 end
 
 local function try_acquire_lock()
-  local lockfile = Path:new(lockfile_path)
-  local tmp_lockfile = lockfile_path .. ".tmp." .. vim.fn.getpid()
-
-  Path:new(tmp_lockfile):write(tostring(vim.fn.getpid()), "w")
-
-  if lockfile:exists() then
-    local content = lockfile:read()
-    local pid = tonumber(content)
-    if pid and is_process_running(pid) then
-      os.remove(tmp_lockfile)
-      return false
-    end
-  end
-
-  local success = os.rename(tmp_lockfile, lockfile_path)
-  if not success then
-    os.remove(tmp_lockfile)
-    return false
-  end
-
+  vim.fn.mkdir(vim.fn.fnamemodify(lockfile_path, ":h"), "p")
+  local ok, content = pcall(function() return Path:new(lockfile_path):read() end)
+  local pid = ok and tonumber(content)
+  if pid and not is_process_running(pid) then os.remove(lockfile_path) end
+  local fd = vim.uv.fs_open(lockfile_path, "wx", 384)
+  if not fd then return false end
+  vim.uv.fs_write(fd, tostring(vim.fn.getpid()), 0)
+  vim.uv.fs_close(fd)
   return true
 end
 
@@ -68,16 +56,18 @@ local function write_json(data)
   end
 
   local tmp_path = auth_path .. ".tmp." .. vim.fn.getpid()
-  local file, open_err = io.open(tmp_path, "w")
-  if not file then
+  -- Set owner-only permissions before writing any credentials.
+  local fd, open_err = vim.uv.fs_open(tmp_path, "w", 384)
+  if not fd then
     Utils.error("Failed to save auth file: " .. tostring(open_err), { once = true, title = "Avante" })
     return false
   end
 
-  local write_ok, write_err = pcall(file.write, file, json_str)
-  file:close()
+  local written, write_err = vim.uv.fs_write(fd, json_str, 0)
+  vim.uv.fs_close(fd)
 
-  if not write_ok then
+  if written ~= #json_str then
+    os.remove(tmp_path)
     Utils.error("Failed to write auth file: " .. tostring(write_err), { once = true, title = "Avante" })
     return false
   end
@@ -96,23 +86,21 @@ local function write_json(data)
   return true
 end
 
-local function with_lock(fn, attempts)
-  attempts = attempts or 0
-  if try_acquire_lock() then
-    local ok, result = pcall(fn)
-    release_lock()
-    if not ok then
+local function with_lock(fn)
+  -- Credential writes must finish before a rotating-token refresh releases its
+  -- lock. Bound the wait instead of scheduling the write for a later tick.
+  for _ = 1, 6 do
+    if try_acquire_lock() then
+      local ok, result = pcall(fn)
+      release_lock()
+      if ok then return result end
       Utils.warn("Failed to update auth file: " .. tostring(result), { once = true, title = "Avante" })
-      return nil
+      return false
     end
-    return result
+    vim.uv.sleep(50)
   end
-
-  if attempts < 5 then
-    vim.defer_fn(function()
-      with_lock(fn, attempts + 1)
-    end, 50)
-  end
+  Utils.warn("Auth file is locked by another process", { once = true, title = "Avante" })
+  return false
 end
 
 function M.path() return auth_path end
@@ -151,9 +139,7 @@ end
 
 function M.write_all(data)
   data = data or {}
-  return with_lock(function()
-    return write_json(data)
-  end)
+  return with_lock(function() return write_json(data) end)
 end
 
 function M.update(provider, token)
@@ -165,30 +151,39 @@ function M.update(provider, token)
 end
 
 function M.watch(callback)
-  if type(callback) == "function" then table.insert(callbacks, callback) end
-
-  if M._watcher then return end
-
-  local auth_file = Path:new(auth_path)
-  if not auth_file:exists() then M.write_all({}) end
-
-  M._watcher = vim.uv.new_fs_event()
-  M._watcher:start(
-    auth_path,
-    {},
-    vim.schedule_wrap(function()
-      local data = M.read()
-      for _, cb in ipairs(callbacks) do
-        cb(data)
+  table.insert(callbacks, callback)
+  if not M._watcher then
+    vim.fn.mkdir(vim.fn.fnamemodify(auth_path, ":h"), "p")
+    M._watcher = vim.uv.new_fs_event()
+    -- Watch the directory: an atomic rename replaces the file's inode.
+    M._watcher:start(
+      vim.fn.fnamemodify(auth_path, ":h"),
+      {},
+      vim.schedule_wrap(function(err, filename)
+        if err or (filename and filename ~= "auth.json") then return end
+        local data = M.read()
+        for _, cb in ipairs(callbacks) do
+          cb(data)
+        end
+      end)
+    )
+  end
+  return function()
+    for i, cb in ipairs(callbacks) do
+      if cb == callback then
+        table.remove(callbacks, i)
+        break
       end
-    end)
-  )
+    end
+    if #callbacks == 0 then M.cleanup() end
+  end
 end
 
 function M.cleanup()
   if M._watcher then
     ---@diagnostic disable-next-line: param-type-mismatch
     M._watcher:stop()
+    M._watcher:close()
     M._watcher = nil
   end
 end

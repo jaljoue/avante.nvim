@@ -10,8 +10,7 @@ busted.describe("openai provider with ChatGPT sign in", function()
   local original_parse_config
   local original_get_headers
 
-  local function curl_args(token)
-    OpenAIAuth.state = { openai_token = token }
+  local function curl_args()
     return openai:parse_curl_args({
       system_prompt = "system prompt",
       messages = { { role = "user", content = "hi" } },
@@ -35,6 +34,8 @@ busted.describe("openai provider with ChatGPT sign in", function()
         max_completion_tokens = 16384,
         reasoning_effort = "medium",
         prompt_cache_retention = "24h",
+        stream = false,
+        previous_response_id = "configured-response",
       }
     end
     OpenAIAuth.get_headers = function() return { Authorization = "Bearer token" } end
@@ -47,24 +48,51 @@ busted.describe("openai provider with ChatGPT sign in", function()
   end)
 
   busted.it("sends Sign in with ChatGPT tokens to the OpenAI Responses API", function()
-    local args = curl_args({ access_token = "a", refresh_token = "r", expires_at = 0, client_id = "oaiapp_issued" })
+    local args = curl_args()
 
     assert.equals("https://api.openai.com/v1/responses", args.url)
     assert.is_false(args.body.store)
+    assert.is_true(args.body.stream)
+    assert.equals("Bearer token", args.headers.Authorization)
     assert.is_nil(args.body.temperature)
     assert.is_nil(args.body.max_output_tokens)
     assert.is_nil(args.body.prompt_cache_retention)
     assert.is_nil(args.body.instructions)
+    assert.is_nil(args.body.previous_response_id)
     assert.equals("developer", args.body.input[1].role)
     assert.equals("system prompt", args.body.input[1].content)
   end)
 
-  busted.it("keeps device code tokens on the Codex backend", function()
-    local args = curl_args({ access_token = "a", refresh_token = "r", expires_at = 0, account_id = "acct" })
-
-    assert.equals("https://chatgpt.com/backend-api/codex/responses", args.url)
-    assert.equals("system prompt", args.body.instructions)
-    assert.equals("user", args.body.input[1].role)
+  busted.it("resends tool calls and results without stored response or reasoning IDs", function()
+    local args = openai:parse_curl_args({
+      system_prompt = "system prompt",
+      session_ctx = {
+        last_response_id = "old-response",
+        last_response_model = "gpt-5.5",
+        last_response_auth_type = "chatgpt",
+      },
+      messages = {
+        { role = "user", content = "Read a file" },
+        { role = "assistant", content = { type = "reasoning", id = "old-reasoning" } },
+        {
+          role = "assistant",
+          content = {
+            { type = "tool_use", id = "call-1", name = "read_file", input = { path = "example.lua" } },
+          },
+        },
+        { role = "user", content = { { type = "tool_result", tool_use_id = "call-1", content = "file contents" } } },
+      },
+    })
+    local call, result
+    for _, item in ipairs(args.body.input) do
+      assert.not_equals("reasoning", item.type)
+      if item.type == "function_call" then call = item end
+      if item.type == "function_call_output" then result = item end
+    end
+    assert.equals("call-1", call.call_id)
+    assert.equals(call.call_id, result.call_id)
+    assert.equals("file contents", result.output)
+    assert.is_nil(args.body.previous_response_id)
   end)
 end)
 
