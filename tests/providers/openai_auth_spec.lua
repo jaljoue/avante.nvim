@@ -220,6 +220,7 @@ busted.describe("openai auth provider", function()
 
     assert.equals("", openai_auth.api_key_name)
     assert.equals("", provider.api_key_name)
+    assert.equals("", Providers.openai.api_key_name)
   end)
 
   busted.describe("Sign in with ChatGPT", function()

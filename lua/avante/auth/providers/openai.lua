@@ -371,6 +371,7 @@ function M.setup(provider)
   if auth_type == "chatgpt" then
     M.api_key_name = ""
     provider.api_key_name = ""
+    if provider_conf then provider_conf.api_key_name = "" end
   else
     M.api_key_name = "OPENAI_API_KEY"
     provider.api_key_name = "OPENAI_API_KEY"
