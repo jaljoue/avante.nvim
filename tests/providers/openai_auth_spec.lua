@@ -1,5 +1,4 @@
 ---@diagnostic disable: duplicate-set-field
-local busted = require("plenary.busted")
 local Config = require("avante.config")
 local Providers = require("avante.providers")
 local Path = require("plenary.path")
@@ -15,7 +14,7 @@ local function parse_form(value)
   return params
 end
 
-busted.describe("OpenAI sign-in lifecycle", function()
+describe("OpenAI sign-in lifecycle", function()
   local auth, store, curl, callback, opened_url, response, posts, server_stopped
   local data_dir, originals
   local modules = {
@@ -38,7 +37,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     }
   end
 
-  busted.before_each(function()
+  before_each(function()
     data_dir = vim.fn.tempname()
     originals = {
       stdpath = vim.fn.stdpath,
@@ -91,7 +90,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     auth = require("avante.auth.providers.openai")
   end)
 
-  busted.after_each(function()
+  after_each(function()
     auth.cleanup()
     store.cleanup()
     curl.post = originals.post
@@ -103,7 +102,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     vim.fn.delete(data_dir, "rf")
   end)
 
-  busted.it("keeps setup explicit and rejects old device-flow credentials", function()
+  it("keeps setup explicit and rejects old device-flow credentials", function()
     auth.setup({ tokenizer_id = "gpt-4o" })
     assert.equals("", Providers.openai.api_key_name)
     assert.is_nil(opened_url)
@@ -123,7 +122,28 @@ busted.describe("OpenAI sign-in lifecycle", function()
     )
   end)
 
-  busted.it("registers, stores, and reauthorizes the same installation and identity", function()
+  it("recovers from malformed credentials and rejects incomplete saved identities", function()
+    assert.is_true(store.update("openai", 42))
+    auth.authenticate()
+    assert.equals("dynamic_agent_client", parse_form(opened_url).client_id)
+
+    local invalid_client = credentials()
+    invalid_client.client_id = 42
+    assert.is_true(store.update("openai", invalid_client))
+    auth.authenticate()
+    assert.equals("dynamic_agent_client", parse_form(opened_url).client_id)
+
+    for _, field in ipairs({ "subject", "id_token" }) do
+      local token = credentials()
+      token[field] = nil
+      assert.is_true(store.update("openai", token))
+      auth.setup({})
+      assert.is_nil(auth.get_token())
+      assert.is_nil(store.read().openai)
+    end
+  end)
+
+  it("registers, stores, and reauthorizes the same installation and identity", function()
     assert.is_true(store.update("claude", { access_token = "other-provider" }))
     auth.authenticate()
     local first = parse_form(opened_url)
@@ -157,7 +177,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.equals("oaiapp_test", posts[2].body.client_id)
   end)
 
-  busted.it("leaves credentials untouched when sign-in is incomplete or unauthorized", function()
+  it("leaves credentials untouched when sign-in is incomplete or unauthorized", function()
     for _, change in ipairs({
       function() response.scope = "openid profile" end,
       function() response.id_token = "invalid-id" end,
@@ -186,7 +206,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.is_nil(auth.get_token())
   end)
 
-  busted.it("rejects a changed registration or identity during reauthorization", function()
+  it("rejects a changed registration or identity during reauthorization", function()
     auth.state.openai_token = credentials()
     auth.authenticate()
     callback.success("code", { client_id = "oaiapp_other" })
@@ -197,7 +217,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.equals("old-access", auth.get_token().access_token)
   end)
 
-  busted.it("closes the listener when the browser cannot open", function()
+  it("closes the listener when the browser cannot open", function()
     vim.ui.open = function() return nil, "No browser launcher" end
     auth.authenticate()
     assert.is_true(server_stopped)
@@ -235,7 +255,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.equals("new-access", auth.get_token().access_token)
   end)
 
-  busted.it("preserves credentials and releases the refresh lock after failure", function()
+  it("preserves credentials and releases the refresh lock after failure", function()
     auth.state.openai_token = credentials()
     assert.is_true(store.update("openai", credentials()))
     -- A Neovim process that exited must not leave refresh permanently blocked.
@@ -254,7 +274,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     assert.equals("rotated", store.read().openai.refresh_token)
   end)
 
-  busted.it("serializes refreshes from independent auth instances", function()
+  it("serializes refreshes from independent auth instances", function()
     local complete
     curl.post = function(_, opts)
       complete = opts.callback
@@ -276,7 +296,7 @@ busted.describe("OpenAI sign-in lifecycle", function()
     other.cleanup()
   end)
 
-  busted.it("watches successive atomic credential replacements", function()
+  it("watches successive atomic credential replacements", function()
     local observed
     local unwatch = store.watch(function(data) observed = data and data.openai end)
     store.update("openai", { access_token = "first" })

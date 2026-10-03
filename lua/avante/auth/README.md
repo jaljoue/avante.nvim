@@ -70,12 +70,15 @@ use the same approach.
 
 ## Checks
 
-Run `make luatest` after installing Neovim, ripgrep, silversearcher-ag, and
-OpenSSL. The OpenAI lifecycle tests cover real credential persistence and watch
-notifications while mocking the authorization browser and token endpoint.
+Run `make setup-deps` once to install the plugin dependencies, then run
+`make luatest` in `nix develop .#ci`, or install Neovim, nlua, Busted,
+ripgrep, silversearcher-ag, and OpenSSL. The OpenAI lifecycle tests cover real
+credential persistence and watch notifications while mocking the authorization
+browser and token endpoint.
 Callback tests use a real loopback listener. ID-token tests sign locally with
 OpenSSL and verify against a local JWKS response. No live account is required.
 
-The request tests cover Responses formatting, tool-call history, and usage-limit
-handling. Keep tests centered on these observable behaviors rather than separate
+The request tests cover Responses formatting, tool-call history, session changes,
+and usage-limit handling. A plugin startup test checks login and model-picker
+command dispatch. Keep tests centered on these observable behaviors rather than separate
 assertions about helper names, picker labels, or fixed delays.

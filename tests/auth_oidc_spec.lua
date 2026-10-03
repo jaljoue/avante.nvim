@@ -1,9 +1,8 @@
-local busted = require("plenary.busted")
 local curl = require("plenary.curl")
 local oidc = require("avante.auth.oidc")
 local function base64url(value) return vim.base64.encode(value):gsub("+", "-"):gsub("/", "_"):gsub("=", "") end
 
-busted.describe("OpenAI ID-token verification", function()
+describe("OpenAI ID-token verification", function()
   local key_path, original_get, claims, header
   local function signed_token()
     local message = base64url(vim.json.encode(header)) .. "." .. base64url(vim.json.encode(claims))
@@ -12,7 +11,7 @@ busted.describe("OpenAI ID-token verification", function()
     return message .. "." .. base64url(signature.stdout)
   end
 
-  busted.before_each(function()
+  before_each(function()
     key_path = vim.fn.tempname()
     local key = vim.system({ "openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048" }):wait()
     assert.equals(0, key.code)
@@ -42,7 +41,7 @@ busted.describe("OpenAI ID-token verification", function()
       exp = os.time() + 3600,
     }
   end)
-  busted.after_each(function()
+  after_each(function()
     curl.get = original_get
     os.remove(key_path)
   end)
@@ -54,7 +53,7 @@ busted.describe("OpenAI ID-token verification", function()
     assert.equals("user-1", identity.sub)
   end)
 
-  busted.it("rejects untrusted signatures and mismatched identity claims", function()
+  it("rejects untrusted signatures and mismatched identity claims", function()
     local valid = signed_token()
     local head, payload, signature = valid:match("^([^.]+)%.([^.]+)%.([^.]+)$")
     assert.is_nil(oidc.validate(head .. "." .. payload .. "." .. signature:reverse(), "oaiapp_test", "test-nonce"))

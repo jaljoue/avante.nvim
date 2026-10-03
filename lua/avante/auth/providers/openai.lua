@@ -59,6 +59,10 @@ local function is_valid_token(token)
     and token.client_id ~= dynamic_client_id
     and type(token.scopes) == "table"
     and vim.tbl_contains(token.scopes, direct_token_scope)
+    and type(token.subject) == "string"
+    and token.subject ~= ""
+    and type(token.id_token) == "string"
+    and token.id_token ~= ""
 end
 
 -- OpenAI identifies each installation ("agent host") by a stable UUID. It is kept
@@ -206,9 +210,11 @@ function M.authenticate()
   local challenge, challenge_err = pkce.generate_challenge(verifier)
   if not challenge then return Utils.error("Failed to generate PKCE challenge: " .. tostring(challenge_err)) end
 
+  ---@type OpenAIAuthToken|nil
   local saved = M.get_token() or (AuthStore.read() or {}).openai
+  if type(saved) ~= "table" then saved = nil end
   ---@type string|nil
-  local registered_client = saved and saved.client_id
+  local registered_client = saved and type(saved.client_id) == "string" and saved.client_id or nil
   if registered_client == "" or registered_client == dynamic_client_id then registered_client = nil end
   local server_info, server_err = OAuthServer.start()
   if not server_info then return Utils.error("Failed to start OAuth callback server: " .. tostring(server_err)) end
@@ -242,7 +248,7 @@ function M.authenticate()
     if not tokens then return fail(token_err) end
     local identity, identity_err = OIDC.validate(tokens.id_token, issued_client, nonce)
     if not identity then return fail(identity_err) end
-    if registered_client and saved.subject and saved.subject ~= identity.sub then
+    if registered_client and saved and saved.subject and saved.subject ~= identity.sub then
       return fail("Signed-in identity changed")
     end
     if not M.store_tokens(tokens, { client_id = issued_client, subject = identity.sub }) then return end
@@ -257,7 +263,7 @@ function M.authenticate()
       client_id = registered_client or dynamic_client_id,
       agent_name_hint = not registered_client and "Avante" or nil,
       ext_agent_host_id = "urn:uuid:" .. host_id,
-      id_token_hint = registered_client and saved.id_token or nil,
+      id_token_hint = registered_client and saved and saved.id_token or nil,
       response_type = "code",
       redirect_uri = server_info.redirect_uri,
       resource = resource,

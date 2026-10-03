@@ -1,10 +1,8 @@
-local busted = require("plenary.busted")
-
-busted.describe("inherited providers", function()
+describe("inherited providers", function()
   local Config, Providers
   local original_openai_config
 
-  busted.before_each(function()
+  before_each(function()
     package.loaded["avante.providers"] = nil
     Config = require("avante.config")
     if Config.providers == nil then Config.providers = {} end
@@ -12,7 +10,7 @@ busted.describe("inherited providers", function()
     Providers = require("avante.providers")
   end)
 
-  busted.after_each(function()
+  after_each(function()
     if Config.providers then
       Config.providers.my_inherited_a = nil
       Config.providers.my_inherited_b = nil
@@ -21,7 +19,7 @@ busted.describe("inherited providers", function()
     end
   end)
 
-  busted.it("does not inherit auth_type from the base provider config", function()
+  it("does not inherit auth_type from the base provider config", function()
     Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_a = {
       __inherited_from = "openai",
@@ -34,7 +32,7 @@ busted.describe("inherited providers", function()
     assert.equals("MY_KEY", functor.api_key_name)
   end)
 
-  busted.it("respects an explicit auth_type on the inherited provider", function()
+  it("respects an explicit auth_type on the inherited provider", function()
     Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_b = {
       __inherited_from = "openai",
@@ -46,7 +44,7 @@ busted.describe("inherited providers", function()
     assert.equals("chatgpt", functor.auth_type)
   end)
 
-  busted.it("installs a generic setup instead of the base module setup", function()
+  it("installs a generic setup instead of the base module setup", function()
     Config.providers.openai = { auth_type = "chatgpt" }
     Config.providers.my_inherited_c = {
       __inherited_from = "openai",

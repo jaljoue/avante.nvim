@@ -135,8 +135,6 @@ vim.g.avante_login = vim.g.avante_login
 ---@field image_paths? string[]
 ---@field tools? AvanteLLMTool[] Available tools
 ---@field pending_compaction_history_messages? AvanteLLMMessage[] messages that might need to get compacted
----@field tools? AvanteLLMTool[]
----@field pending_compaction_history_messages? AvanteLLMMessage[]
 ---@field session_id? string
 ---@field session_ctx? table
 ---@field force_include_tool_calls? boolean
@@ -375,7 +373,7 @@ vim.g.avante_login = vim.g.avante_login
 ---@field transform_tool? fun(self: AvanteProviderFunctor, tool: AvanteLLMTool, use_prefix?: boolean): AvanteOpenAITool | AvanteClaudeTool
 ---@field get_rate_limit_sleep_time? fun(self: AvanteProviderFunctor, headers: table<string, string>): integer | nil
 ---@field get_usage_limit_error? fun(self: AvanteProviderFunctor, err: string | table | nil): string | nil Returns a message for errors that should stop instead of retrying as a rate limit
----@field list_models? fun(self): AvanteProviderModelList | nil
+---@field list_models? fun(self, timeout?: integer): AvanteProviderModelList | nil
 ---
 ---@alias AvanteBedrockPayloadBuilder fun(self: AvanteBedrockModelHandler | AvanteBedrockProviderFunctor, prompt_opts: AvantePromptOptions, request_body: table<string, any>): table<string, any>
 ---
