@@ -1,14 +1,14 @@
 ---@diagnostic disable: duplicate-set-field
-local busted = require("plenary.busted")
 local Config = require("avante.config")
 Config.setup({})
 
-busted.describe("openai provider with ChatGPT sign in", function()
+describe("openai provider with ChatGPT sign in", function()
   local openai
   local Providers
   local OpenAIAuth
   local original_parse_config
   local original_get_headers
+  local original_last_response_id
 
   local function curl_args()
     return openai:parse_curl_args({
@@ -17,12 +17,14 @@ busted.describe("openai provider with ChatGPT sign in", function()
     })
   end
 
-  busted.before_each(function()
+  before_each(function()
     Providers = require("avante.providers")
     OpenAIAuth = require("avante.auth.providers.openai")
     openai = require("avante.providers.openai")
     original_parse_config = Providers.parse_config
     original_get_headers = OpenAIAuth.get_headers
+    original_last_response_id = openai.last_response_id
+    openai.last_response_id = nil
     Providers.parse_config = function()
       return {
         auth_type = "chatgpt",
@@ -41,13 +43,14 @@ busted.describe("openai provider with ChatGPT sign in", function()
     OpenAIAuth.get_headers = function() return { Authorization = "Bearer token" } end
   end)
 
-  busted.after_each(function()
+  after_each(function()
     Providers.parse_config = original_parse_config
     OpenAIAuth.get_headers = original_get_headers
+    openai.last_response_id = original_last_response_id
     OpenAIAuth.state = { openai_token = nil }
   end)
 
-  busted.it("sends Sign in with ChatGPT tokens to the OpenAI Responses API", function()
+  it("sends Sign in with ChatGPT tokens to the OpenAI Responses API", function()
     local args = curl_args()
 
     assert.equals("https://api.openai.com/v1/responses", args.url)
@@ -65,7 +68,13 @@ busted.describe("openai provider with ChatGPT sign in", function()
   end)
 
   it("replays encrypted reasoning and tool history without stored responses", function()
-    local args = openai:parse_curl_args({
+    openai:parse_response(
+      {},
+      vim.json.encode({ type = "response.completed", response = { id = "old-response" } }),
+      "response.completed",
+      { on_stop = function() end }
+    )
+    local prompt_opts = {
       system_prompt = "system prompt",
       session_ctx = {
         last_response_id = "old-response",
@@ -88,7 +97,8 @@ busted.describe("openai provider with ChatGPT sign in", function()
         },
         { role = "user", content = { { type = "tool_result", tool_use_id = "call-1", content = "file contents" } } },
       },
-    })
+    }
+    local args = openai:parse_curl_args(prompt_opts)
     local call, result, reasoning = nil, nil, {}
     for _, item in ipairs(args.body.input) do
       if item.type == "reasoning" then table.insert(reasoning, item) end
@@ -103,10 +113,63 @@ busted.describe("openai provider with ChatGPT sign in", function()
       { type = "reasoning", id = "rs_second", encrypted_content = "second-ciphertext", summary = {} },
     }, reasoning)
     assert.is_nil(args.body.previous_response_id)
+
+    prompt_opts.session_ctx = nil
+    local without_session = openai:parse_curl_args(prompt_opts)
+    assert.is_nil(without_session.body.previous_response_id)
+    assert.same(args.body.input, without_session.body.input)
+  end)
+
+  it("chains API tool results only within the matching session", function()
+    Providers.parse_config = function()
+      return {
+        auth_type = "api",
+        model = "gpt-4o",
+        endpoint = "https://api.openai.com/v1",
+        use_response_api = true,
+        support_previous_response_id = true,
+      }, { temperature = 0.75 }
+    end
+    local prompt_opts = {
+      system_prompt = "system prompt",
+      messages = {
+        { role = "user", content = "Read a file" },
+        {
+          role = "assistant",
+          content = { { type = "tool_use", id = "call-1", name = "read_file", input = {} } },
+        },
+        { role = "user", content = { { type = "tool_result", tool_use_id = "call-1", content = "contents" } } },
+      },
+      session_ctx = {
+        last_response_id = "session-response",
+        last_response_model = "gpt-4o",
+        last_response_auth_type = "api",
+      },
+    }
+    local args = openai:parse_curl_args(prompt_opts)
+    assert.equals("session-response", args.body.previous_response_id)
+    assert.equals("function_call_output", args.body.input[1].type)
+    assert.equals(1, #args.body.input)
+    assert.equals(0.75, args.body.temperature)
+
+    openai.last_response_id = "another-session-response"
+    for _, session in ipairs({
+      { last_response_id = "old-model-response", last_response_model = "gpt-5.5", last_response_auth_type = "api" },
+      { last_response_id = "old-auth-response", last_response_model = "gpt-4o", last_response_auth_type = "chatgpt" },
+      false,
+    }) do
+      prompt_opts.session_ctx = session or nil
+      args = openai:parse_curl_args(prompt_opts)
+      assert.is_nil(args.body.previous_response_id)
+      assert.same(
+        { "system", "user", "function_call", "function_call_output" },
+        vim.tbl_map(function(item) return item.type or item.role end, args.body.input)
+      )
+    end
   end)
 end)
 
-busted.describe("ChatGPT usage limit", function()
+describe("ChatGPT usage limit", function()
   local openai = require("avante.providers.openai")
   local usage_limit_error = {
     code = "subscription_sharing_usage_limit_exceeded",
@@ -114,7 +177,7 @@ busted.describe("ChatGPT usage limit", function()
     type = "rate_limit_error",
   }
 
-  busted.it("recognizes the usage limit in an HTTP error body", function()
+  it("recognizes the usage limit in an HTTP error body", function()
     local message = openai:get_usage_limit_error(vim.json.encode({ error = usage_limit_error }))
 
     assert.equals(
@@ -123,13 +186,13 @@ busted.describe("ChatGPT usage limit", function()
     )
   end)
 
-  busted.it("ignores other errors", function()
+  it("ignores other errors", function()
     assert.is_nil(openai:get_usage_limit_error(vim.json.encode({ error = { code = "rate_limit_exceeded" } })))
     assert.is_nil(openai:get_usage_limit_error("not json"))
     assert.is_nil(openai:get_usage_limit_error(nil))
   end)
 
-  busted.it("stops when the stream fails with the usage limit", function()
+  it("stops when the stream fails with the usage limit", function()
     local stop_opts
     openai:parse_response(
       {},
@@ -145,7 +208,7 @@ busted.describe("ChatGPT usage limit", function()
     assert.is_true(stop_opts.error:find("Check your ChatGPT usage", 1, true) ~= nil)
   end)
 
-  busted.describe("HTTP 429 responses", function()
+  describe("HTTP 429 responses", function()
     local curl = require("plenary.curl")
     local Utils = require("avante.utils")
     local original_post
@@ -171,25 +234,25 @@ busted.describe("ChatGPT usage limit", function()
       return stop_opts
     end
 
-    busted.before_each(function()
+    before_each(function()
       original_post = curl.post
       original_error = Utils.error
       Utils.error = function() end
     end)
 
-    busted.after_each(function()
+    after_each(function()
       curl.post = original_post
       Utils.error = original_error
     end)
 
-    busted.it("stops instead of retrying when the usage limit is reached", function()
+    it("stops instead of retrying when the usage limit is reached", function()
       local stop_opts = request(vim.json.encode({ error = usage_limit_error }))
 
       assert.equals("error", stop_opts.reason)
       assert.is_true(stop_opts.error:find("Check your ChatGPT usage", 1, true) ~= nil)
     end)
 
-    busted.it("still retries other rate limits", function()
+    it("still retries other rate limits", function()
       local stop_opts = request(vim.json.encode({ error = { code = "rate_limit_exceeded" } }))
 
       assert.equals("rate_limit", stop_opts.reason)

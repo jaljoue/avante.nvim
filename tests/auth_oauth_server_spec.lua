@@ -1,7 +1,6 @@
-local busted = require("plenary.busted")
 local server = require("avante.auth.oauth_server")
 
-busted.describe("OAuth loopback callback", function()
+describe("OAuth loopback callback", function()
   local listener, outcome
   local function request(query)
     local response, done = "", false
@@ -22,7 +21,7 @@ busted.describe("OAuth loopback callback", function()
     return response
   end
 
-  busted.before_each(function()
+  before_each(function()
     outcome = nil
     listener = assert(server.start())
     server.wait_for_callback(
@@ -31,9 +30,9 @@ busted.describe("OAuth loopback callback", function()
       function(err) outcome = { error = err } end
     )
   end)
-  busted.after_each(function() server.stop() end)
+  after_each(function() server.stop() end)
 
-  busted.it("delivers a verified callback once", function()
+  it("delivers a verified callback once", function()
     assert.is_true(request("state=expected-state&code=auth-code&client_id=oaiapp_test"):find("200 OK", 1, true) ~= nil)
     assert.equals("auth-code", outcome.code)
     assert.equals("oaiapp_test", outcome.params.client_id)
@@ -41,7 +40,7 @@ busted.describe("OAuth loopback callback", function()
     assert.equals("auth-code", outcome.code)
   end)
 
-  busted.it("delivers state, denial, and missing-code failures without losing the callback", function()
+  it("delivers state, denial, and missing-code failures without losing the callback", function()
     for _, query in ipairs({
       "state=wrong&code=code",
       "state=expected-state&error=access_denied",
@@ -60,7 +59,7 @@ busted.describe("OAuth loopback callback", function()
     end
   end)
 
-  busted.it("uses another loopback port when the preferred port is busy", function()
+  it("uses another loopback port when the preferred port is busy", function()
     server.stop()
     local occupied = vim.uv.new_tcp()
     local bound = occupied:bind("127.0.0.1", 1455)

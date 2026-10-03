@@ -16,10 +16,9 @@
 ---   })
 ---@usage ]]
 ---
----After reopening Neovim, complete the browser authentication flow. If needed,
----run:
+---Run the login command, select Claude, and complete the browser flow:
 --->
----   :AvanteSwitchProvider
+---   :AvanteLogin
 ---<
 
 local Utils = require("avante.utils")
@@ -33,7 +32,7 @@ local ClaudeAuth = require("avante.auth.providers.claude")
 ---@class AvanteAnthropicProvider : AvanteDefaultBaseProvider
 ---@field auth_type "api" | "max"
 
----@class AvanteProviderFunctor
+---@class AvanteClaudeProviderFunctor : AvanteProviderFunctor
 local M = {}
 
 local claude_code_spoof_prompt = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -541,7 +540,7 @@ function M.on_error(result)
   Utils.error(error_msg, { once = true, title = "Avante" })
 end
 
-function M.authenticate(...) return ClaudeAuth.authenticate(...) end
+function M.authenticate() return ClaudeAuth.authenticate() end
 
 function M.refresh_token(...) return ClaudeAuth.refresh_token(...) end
 

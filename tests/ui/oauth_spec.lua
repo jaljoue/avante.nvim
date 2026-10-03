@@ -1,8 +1,7 @@
-local busted = require("plenary.busted")
 local ui = require("avante.ui.oauth")
 
-busted.describe("OAuth URL fallback", function()
-  busted.it("makes the URL available and runs manual login when no UI is attached", function()
+describe("OAuth URL fallback", function()
+  it("makes the URL available and runs manual login when no UI is attached", function()
     local original_notify, original_setreg = vim.notify, vim.fn.setreg
     local copied, context
     vim.notify = function() end

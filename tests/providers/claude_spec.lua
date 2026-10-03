@@ -159,7 +159,7 @@ describe("claude provider", function()
         assert.is_true(claude_auth.state.claude_token.expires_at > original_time)
       end)
 
-      async.it("should include all required fields", function()
+      it("should include all required fields", function()
         claude_auth.state = { claude_token = nil }
 
         local mock_tokens = create_mock_token_response()
@@ -215,8 +215,8 @@ describe("claude provider", function()
       claude_provider = require("avante.providers.claude")
     end)
 
-    busted.describe("authenticate", function()
-      async.it("should generate PKCE parameters", function()
+    describe("authenticate", function()
+      it("should generate PKCE parameters", function()
         -- Mock vim.notify to prevent notifications
         local original_notify = vim.notify
         vim.notify = function() end
@@ -243,7 +243,7 @@ describe("claude provider", function()
         assert.is_true(captured_oauth_opts.auth_url:match("code_challenge_method=S256") ~= nil)
       end)
 
-      async.it("should construct authorization URL with correct parameters", function()
+      it("should construct authorization URL with correct parameters", function()
         local original_notify = vim.notify
         vim.notify = function() end
 
@@ -273,7 +273,7 @@ describe("claude provider", function()
         assert.is_true(captured_oauth_opts.auth_url:match("code_challenge_method=S256") ~= nil)
       end)
 
-      async.it("should use correct OAuth endpoint", function()
+      it("should use correct OAuth endpoint", function()
         local original_notify = vim.notify
         vim.notify = function() end
 
@@ -356,14 +356,14 @@ describe("claude provider", function()
       curl = require("plenary.curl")
     end)
 
-    busted.describe("refresh_token", function()
-      busted.it("should exit early when no state exists", function()
+    describe("refresh_token", function()
+      it("should exit early when no state exists", function()
         claude_auth.state = nil
         local result = claude_provider.refresh_token(false, false)
         assert.is_false(result)
       end)
 
-      busted.it("should exit early when no token exists in state", function()
+      it("should exit early when no token exists in state", function()
         claude_auth.state = { claude_token = nil }
         local result = claude_provider.refresh_token(false, false)
         assert.is_false(result)
@@ -601,8 +601,8 @@ describe("claude provider", function()
       end)
     end)
 
-    busted.describe("Max mode setup", function()
-      async.it("should initialize state when nil", function()
+    describe("Max mode setup", function()
+      it("should initialize state when nil", function()
         -- Mock everything to prevent actual setup
         local P = require("avante.providers")
         P.parse_config = function() return { auth_type = "max" }, {} end
@@ -645,11 +645,11 @@ describe("claude provider", function()
     end)
   end)
 
-  busted.describe("Auth provider headers", function()
+  describe("Auth provider headers", function()
     local claude_auth
     local curl
 
-    busted.before_each(function()
+    before_each(function()
       package.loaded["avante.auth.providers.claude"] = nil
       package.loaded["plenary.curl"] = nil
       package.loaded["avante.auth.store"] = {
@@ -662,7 +662,7 @@ describe("claude provider", function()
       curl = require("plenary.curl")
     end)
 
-    busted.it("returns API key headers in API mode", function()
+    it("returns API key headers in API mode", function()
       local headers = claude_auth.get_headers({ auth_type = "api", api_key_name = "ANTHROPIC_API_KEY" }, {
         parse_api_key = function() return "api-key" end,
       })
@@ -671,7 +671,7 @@ describe("claude provider", function()
       assert.equals("prompt-caching-2024-07-31", headers["anthropic-beta"])
     end)
 
-    busted.it("returns OAuth headers in max mode", function()
+    it("returns OAuth headers in max mode", function()
       claude_auth.state = { claude_token = create_mock_token_data(false) }
 
       local headers = claude_auth.get_headers({ auth_type = "max" }, {
@@ -683,7 +683,7 @@ describe("claude provider", function()
       assert.is_true(headers["anthropic-beta"]:match("oauth%-2025%-04%-20") ~= nil)
     end)
 
-    busted.it("refreshes expired OAuth tokens before returning headers", function()
+    it("refreshes expired OAuth tokens before returning headers", function()
       claude_auth.state = { claude_token = create_mock_token_data(true) }
 
       local original_post = curl.post

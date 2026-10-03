@@ -199,7 +199,8 @@ function M.is_reasoning_model(model)
 end
 
 function M.set_allowed_params(provider_conf, request_body)
-  local use_response_api = provider_conf.auth_type == "chatgpt" and true or Providers.resolve_use_response_api(provider_conf, nil)
+  local use_response_api = provider_conf.auth_type == "chatgpt"
+    or Providers.resolve_use_response_api(provider_conf, nil)
   local is_reasoning_model = M.is_reasoning_model(provider_conf.model)
   local reasoning_effort = request_body.reasoning_effort
   if reasoning_effort == nil and type(request_body.reasoning) == "table" then
@@ -239,7 +240,6 @@ function M.set_allowed_params(provider_conf, request_body)
       "logit_bias",
       "logprobs",
       "n",
-      "temperature"
     }
     for _, param in ipairs(unsupported_params) do
       request_body[param] = nil
@@ -998,8 +998,9 @@ function M:parse_curl_args(prompt_opts)
   local has_function_outputs = false
   if use_response_api and prompt_opts.messages then
     for _, msg in ipairs(prompt_opts.messages) do
-      if type(msg.content) == "table" then
-        for _, item in ipairs(msg.content) do
+      local content = msg.content
+      if type(content) == "table" then
+        for _, item in ipairs(content) do
           if type(item) == "table" and item.type == "tool_result" then
             has_function_outputs = true
             break
@@ -1032,16 +1033,7 @@ function M:parse_curl_args(prompt_opts)
 
   -- Response API uses 'input' instead of 'messages'
   if use_response_api then
-    -- Check if we have tool results - if so, use previous_response_id
-    local has_function_outputs = false
-    for _, msg in ipairs(parsed_messages) do
-      if msg.type == "function_call_output" then
-        has_function_outputs = true
-        break
-      end
-    end
-
-    if has_function_outputs and self.last_response_id and provider_conf.support_previous_response_id then
+    if should_use_previous_response_id and session_ctx then
       -- When sending function outputs, use previous_response_id
       base_body.previous_response_id = session_ctx.last_response_id
       -- Only send the function outputs, not the full history
@@ -1052,7 +1044,7 @@ function M:parse_curl_args(prompt_opts)
       base_body.input = function_outputs
       if session_ctx then session_ctx.last_response_id = nil end
     else
-      -- Normal request without tool results
+      -- Include full history when the session cannot use a stored response.
       base_body.input = parsed_messages
     end
 

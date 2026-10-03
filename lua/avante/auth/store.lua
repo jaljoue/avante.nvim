@@ -112,12 +112,12 @@ function M.read()
     local data = safe_decode(auth_file:read())
     if data then
       local legacy = Path:new(legacy_claude_path)
-      if legacy:exists() then pcall(legacy.rm, legacy) end
+      if legacy:exists() then os.remove(legacy_claude_path) end
       return data
     end
 
     Utils.warn("Auth file is corrupted, re-authentication required", { once = true, title = "Avante" })
-    pcall(auth_file.rm, auth_file)
+    os.remove(auth_path)
     return nil
   end
 
@@ -127,12 +127,12 @@ function M.read()
     if token then
       local data = { claude = token }
       write_json(data)
-      pcall(legacy.rm, legacy)
+      os.remove(legacy_claude_path)
       return data
     end
 
     Utils.warn("Auth file is corrupted, re-authentication required", { once = true, title = "Avante" })
-    pcall(legacy.rm, legacy)
+    os.remove(legacy_claude_path)
   end
 
   return nil
