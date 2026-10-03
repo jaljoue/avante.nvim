@@ -512,6 +512,11 @@ _See [config.lua#L9](./lua/avante/config.lua) for the up to date full default co
   -- Of course, you can reduce the request frequency by increasing `suggestion.debounce`.
   auto_suggestions_provider = "claude",
   providers = {
+    openai = {
+      endpoint = "https://api.openai.com/v1",
+      auth_type = "api", -- Set to "chatgpt" to sign in with a ChatGPT subscription
+      model = "gpt-4o",
+    },
     claude = {
       endpoint = "https://api.anthropic.com",
       auth_type = "api", -- Set to "max" to sign in with Claude Pro/Max subscription
@@ -888,20 +893,42 @@ Here's a complete blink.cmp configuration example with all Avante sources:
 
 ## Usage
 
-### Using Claude Pro/Max Subscription
-To login with your Claude subscription, set the **auth_type** of the Claude provider entry in your config to "max", re-open Neovim then the authentication process will start in your browser. Once logged in and authorized, a code will show that needs to be copied into the prompt in Neovim, which should then give access to use your subscription with Avante.
+### Authentication
 
-You may need to run `AvanteSwitchProvider claude` to initiate the authentication if you previously had a different provider selected.
+To authenticate with providers that support subscription-based login:
+
+1. Set `auth_type = "max"` or `auth_type = "chatgpt"` in your provider config
+2. Run `:AvanteLogin` to initiate authentication
+3. Follow the on-screen prompts to complete the flow
 
 ```lua
--- Providers = { ...
-
+providers = {
   claude = {
-    -- ...
     auth_type = "max",
   },
-
+  openai = {
+    auth_type = "chatgpt",
+  },
+}
 ```
+
+Tokens are stored in `stdpath("data") .. "/avante/auth.json"`.
+
+### Claude Pro/Max (`auth_type = "max"`)
+
+Opens a browser window with the login URL. After authorizing, copy the authorization code from the browser and paste it into Neovim to complete the flow.
+
+### OpenAI ChatGPT subscription (`auth_type = "chatgpt"`)
+
+Run `:AvanteLogin`, select `openai`, and continue with ChatGPT in your browser. Avante uses the official [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and sends streaming requests to `https://api.openai.com/v1/responses` with `store = false`.
+
+Sign-in requires a browser on the same machine as Neovim and the `openssl` executable on `PATH` to verify OpenAI's ID tokens. Avante checks RSA/SHA-256 verification before opening the browser and stops sign-in if OpenSSL is missing or fails. OpenSSL runs as a separate process. The callback listener binds to `127.0.0.1`, preferring port 1455 and choosing an available port if it is busy. Device-code sign-in for remote sessions is deferred.
+
+Set a ChatGPT model in your provider config, for example `model = "gpt-6.1-sol"`, or choose one through `:AvanteModels`. The picker uses a built-in list. Model access and usage limits depend on your account and plan. If the plan's app usage limit is reached, Avante stops the request and links to [ChatGPT usage settings](https://chatgpt.com/settings/usage).
+
+Credentials refresh automatically and are shared between Neovim processes through `auth.json`. The installation ID is kept separately in `stdpath("data") .. "/avante/device_id"`. Credentials from the earlier Codex device-code flow require a new browser sign-in. API-key authentication remains available with `auth_type = "api"`.
+
+For the module map, credential lifecycle, and focused checks, see [the auth developer guide](lua/avante/auth/README.md).
 
 ### Basic Functionality
 
