@@ -57,7 +57,6 @@ function PromptInput:open()
 
   local bufnr = api.nvim_create_buf(false, true)
   self.bufnr = bufnr
-  vim.bo[bufnr].filetype = "AvantePromptInput"
   Utils.mark_as_sidebar_buffer(bufnr)
 
   local win_opts = vim.tbl_extend("force", {
@@ -75,15 +74,7 @@ function PromptInput:open()
   local winid = api.nvim_open_win(bufnr, true, win_opts)
   self.winid = winid
 
-  api.nvim_set_option_value("wrap", false, { win = winid })
-  api.nvim_set_option_value("winblend", 5, { win = winid })
-  api.nvim_set_option_value(
-    "winhighlight",
-    "FloatBorder:AvantePromptInputBorder,Normal:AvantePromptInput",
-    { win = winid }
-  )
-  api.nvim_set_option_value("cursorline", true, { win = winid })
-  api.nvim_set_option_value("modifiable", true, { buf = bufnr })
+  vim.bo[bufnr].filetype = "AvantePromptInput"
 
   local default_value_lines = {}
   if self.default_value then default_value_lines = vim.split(self.default_value, "\n") end
