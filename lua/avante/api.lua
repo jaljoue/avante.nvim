@@ -356,6 +356,7 @@ function M.login()
   end)
 end
 
+---@export M
 return setmetatable(M, {
   __index = function(t, k)
     local module = require("avante")
