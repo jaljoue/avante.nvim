@@ -920,15 +920,9 @@ Opens a browser window with the login URL. After authorizing, copy the authoriza
 
 ### OpenAI ChatGPT subscription (`auth_type = "chatgpt"`)
 
-Run `:AvanteLogin`, select `openai`, and continue with ChatGPT in your browser. Avante uses the official [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and sends streaming requests to `https://api.openai.com/v1/responses` with `store = false`.
+Run `:AvanteLogin`, select `openai`, and complete the auth login with ChatGPT in your browser, then a key exchange will complete the flow saving credentials locally. Avante uses the official [open-source sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
 
-Sign-in requires a browser on the same machine as Neovim and the `openssl` executable on `PATH` to verify OpenAI's ID tokens. Avante checks RSA/SHA-256 verification before opening the browser and stops sign-in if OpenSSL is missing or fails. OpenSSL runs as a separate process. The callback listener binds to `127.0.0.1`, preferring port 1455 and choosing an available port if it is busy. Device-code sign-in for remote sessions is deferred.
-
-Set a ChatGPT model in your provider config, for example `model = "gpt-6.1-sol"`, or choose one through `:AvanteModels`. The picker uses a built-in list. Model access and usage limits depend on your account and plan. If the plan's app usage limit is reached, Avante stops the request and links to [ChatGPT usage settings](https://chatgpt.com/settings/usage).
-
-Credentials refresh automatically and are shared between Neovim processes through `auth.json`. The installation ID is kept separately in `stdpath("data") .. "/avante/device_id"`. Credentials from the earlier Codex device-code flow require a new browser sign-in. API-key authentication remains available with `auth_type = "api"`.
-
-For the module map, credential lifecycle, and focused checks, see [the auth developer guide](lua/avante/auth/README.md).
+Set a ChatGPT model in your provider config, for example `model = "gpt-6.1-sol"`, or choose one through `:AvanteModels`. The picker uses a built-in list. Model access and usage limits depend on your account and plan.
 
 ### Basic Functionality
 
